@@ -1,71 +1,206 @@
 /**
- * Função principal: processa notas fiscais pendentes na pasta de entrada.
+ * Ponto de entrada do Webhook Telegram.
+ * Trata fotos (processamento com OCR) e mensagens de texto (comandos /estoque, /compras, /ajuda).
  */
-function processarNotasFiscais() {
+function doPost(e) {
   const props = PropertiesService.getScriptProperties();
-  
-  // Sanitiza a chave e IDs para evitar espaços ou quebras de linha acidentais
-  const rawKey = props.getProperty("GEMINI_API_KEY") || "";
-  const apiKey = rawKey.replace(/["'\s]/g, "");
+  const telegramToken = (props.getProperty("TELEGRAM_BOT_TOKEN") || "").trim();
+  const geminiKey = (props.getProperty("GEMINI_API_KEY") || "").replace(/["'\s]/g, "");
   const folderEntradaId = (props.getProperty("FOLDER_ENTRADA_ID") || "").trim();
   const folderProcessadasId = (props.getProperty("FOLDER_PROCESSADAS_ID") || "").trim();
 
-  if (!apiKey || !folderEntradaId || !folderProcessadasId) {
-    throw new Error("Configure as propriedades GEMINI_API_KEY, FOLDER_ENTRADA_ID e FOLDER_PROCESSADAS_ID nas Propriedades do Script.");
-  }
-
-  const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
-  const pastaProcessadas = DriveApp.getFolderById(folderProcessadasId);
-  const arquivos = pastaEntrada.getFiles();
-
-  const mimeTypesPermitidos = ["image/jpeg", "image/png", "image/webp", "image/heic"];
-  let arquivosProcessados = 0;
-
-  while (arquivos.hasNext()) {
-    const arquivo = arquivos.next();
-    const mimeType = arquivo.getMimeType();
-
-    if (!mimeTypesPermitidos.includes(mimeType)) {
-      Logger.log(`Arquivo ignorado (formato não suportado): ${arquivo.getName()}`);
-      continue;
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return HtmlService.createHtmlOutput("Sem dados");
     }
 
-    Logger.log(`Processando: ${arquivo.getName()}...`);
+    const contents = JSON.parse(e.postData.contents);
+    if (!contents.message) return HtmlService.createHtmlOutput("Sem mensagem");
 
-    try {
-      // 1. Converte imagem para base64
-      const imageBytes = arquivo.getBlob().getBytes();
-      const imageBase64 = Utilities.base64Encode(imageBytes);
+    const chatId = contents.message.chat.id;
+    const textoMensagem = (contents.message.text || "").trim().toLowerCase();
+    const photoArray = contents.message.photo;
 
-      // 2. Extrai dados estruturados usando o modelo gemini-3.5-flash-lite
-      const dadosNota = extrairDadosViaGemini(imageBase64, mimeType, apiKey);
+    // --- ROTEAMENTO DE COMANDOS DE TEXTO ---
+    if (textoMensagem === "/estoque" || textoMensagem === "/compras") {
+      const relatorio = gerarRelatorioEstoqueTelegram();
+      enviarMensagemTelegram(chatId, relatorio, telegramToken);
+      return HtmlService.createHtmlOutput();
+    }
 
-      // 3. Grava no Google Sheets
-      if (dadosNota && dadosNota.itens && dadosNota.itens.length > 0) {
-        gravarNaPlanilha(dadosNota, arquivo.getName());
-        Logger.log(`Gravados ${dadosNota.itens.length} itens da nota.`);
-      } else {
-        Logger.log(`Nenhum item detectado em: ${arquivo.getName()}`);
+    if (textoMensagem === "/start" || textoMensagem === "/ajuda") {
+      const msgAjuda = 
+        `👋 *Assistente de Compras & Estoque*\n\n` +
+        `Envie ou tire uma foto do cupom fiscal para registrar suas compras.\n\n` +
+        `*Comandos disponíveis:*\n` +
+        `• /estoque ou /compras : Lista itens esgotados ou a vencer.`;
+      enviarMensagemTelegram(chatId, msgAjuda, telegramToken);
+      return HtmlService.createHtmlOutput();
+    }
+
+    // Se não for foto e nem comando conhecido
+    if (!photoArray || photoArray.length === 0) {
+      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal ou use /estoque para consultar.", telegramToken);
+      return HtmlService.createHtmlOutput();
+    }
+
+    // --- PROCESSAMENTO DA FOTO ---
+    enviarMensagemTelegram(chatId, "⏳ Imagem recebida! Verificando autenticidade...", telegramToken);
+
+    const fileId = photoArray[photoArray.length - 1].file_id;
+    const getFileUrl = `https://api.telegram.org/bot${telegramToken}/getFile?file_id=${fileId}`;
+    const fileRes = UrlFetchApp.fetch(getFileUrl, { muteHttpExceptions: true });
+    const fileJson = JSON.parse(fileRes.getContentText());
+
+    if (!fileJson.ok || !fileJson.result.file_path) {
+      enviarMensagemTelegram(chatId, "❌ Falha ao obter dados da imagem no Telegram.", telegramToken);
+      return HtmlService.createHtmlOutput();
+    }
+
+    const downloadUrl = `https://api.telegram.org/file/bot${telegramToken}/${fileJson.result.file_path}`;
+    const responseImg = UrlFetchApp.fetch(downloadUrl, {
+      headers: { "Accept": "image/*" },
+      muteHttpExceptions: true
+    });
+
+    const blob = responseImg.getBlob();
+    if (blob.getBytes().length < 1000) {
+      enviarMensagemTelegram(chatId, "⚠ A imagem recebida está corrompida ou vazia.", telegramToken);
+      return HtmlService.createHtmlOutput();
+    }
+
+    const nomeArquivo = `Telegram_${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss")}.jpg`;
+    blob.setName(nomeArquivo);
+
+    const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
+    const driveFile = pastaEntrada.createFile(blob);
+
+    const imageBytes = driveFile.getBlob().getBytes();
+    const imageBase64 = Utilities.base64Encode(imageBytes);
+    const mimeType = driveFile.getMimeType() || "image/jpeg";
+
+    const dadosNota = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
+
+    if (!dadosNota || !dadosNota.itens || dadosNota.itens.length === 0) {
+      enviarMensagemTelegram(chatId, "⚠ Não consegui reconhecer os produtos na imagem. Tente uma foto mais nítida.", telegramToken);
+      return HtmlService.createHtmlOutput();
+    }
+
+    // --- VALIDAÇÃO 1: DEDUPLICAÇÃO ---
+    const identificadorNota = (dadosNota.identificador_nota || "").trim();
+    if (identificadorNota && notaJaCadastrada(identificadorNota)) {
+      if (folderProcessadasId) {
+        driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
       }
-
-      // 4. Move o arquivo para a pasta 'Processadas'
-      arquivo.moveTo(pastaProcessadas);
-      Logger.log(`Arquivo ${arquivo.getName()} movido com sucesso.`);
-
-      arquivosProcessados++;
-    } catch (erro) {
-      Logger.log(`Erro ao processar o arquivo ${arquivo.getName()}: ${erro.message}`);
+      enviarMensagemTelegram(
+        chatId, 
+        `⚠️ *Nota já registrada anteriormente!*\nIdentificador: \`${identificadorNota}\`\nNenhum item duplicado foi adicionado.`, 
+        telegramToken
+      );
+      return HtmlService.createHtmlOutput();
     }
+
+    // Grava dados
+    gravarNaPlanilha(dadosNota, nomeArquivo);
+
+    if (folderProcessadasId) {
+      driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
+    }
+
+    const total = dadosNota.itens.reduce((acc, it) => acc + (Number(it.preco_total) || 0), 0);
+    const msg = 
+      `✅ *Nota Fiscal Processada!*\n\n` +
+      `🏪 *Estabelecimento:* ${dadosNota.estabelecimento || "Mercado"}\n` +
+      `📅 *Data:* ${dadosNota.data_compra || "Hoje"}\n` +
+      `🔖 *Doc/Controle:* \`${identificadorNota || "S/N"}\`\n` +
+      `🛒 *Itens:* ${dadosNota.itens.length}\n` +
+      `💵 *Total:* R$ ${total.toFixed(2).replace('.', ',')}\n\n` +
+      `_Estoque atualizado com sucesso!_`;
+
+    enviarMensagemTelegram(chatId, msg, telegramToken);
+
+  } catch (err) {
+    Logger.log("Erro no doPost: " + err.toString());
   }
 
-  Logger.log(`Concluído. Total de notas processadas nesta execução: ${arquivosProcessados}`);
+  return HtmlService.createHtmlOutput();
 }
 
 /**
- * Envia a imagem para a API do Gemini com o modelo gemini-3.5-flash-lite e JSON Schema.
+ * Consulta a aba Estoque_Atual e formata um resumo para o Telegram.
  */
+function gerarRelatorioEstoqueTelegram() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const abaEstoque = ss.getSheetByName("Estoque_Atual");
+
+  if (!abaEstoque) return "Aba de estoque não configurada.";
+
+  const dados = abaEstoque.getDataRange().getValues();
+  if (dados.length <= 1) return "O estoque ainda está vazio. Envie fotos de notas para preenchê-lo.";
+
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+
+  const urgentes = [];
+  const reporLogo = [];
+  let totalItens = 0;
+
+  for (let r = 1; r < dados.length; r++) {
+    const nome = dados[r][0];
+    const dataPrevisao = dados[r][5];
+
+    if (!nome || !(dataPrevisao instanceof Date)) continue;
+    totalItens++;
+
+    const diffDias = Math.ceil((dataPrevisao.getTime() - hoje.getTime()) / 86400000);
+
+    if (diffDias <= 0) {
+      urgentes.push(`🔴 *${nome}* (Esgotado há ${Math.abs(diffDias)}d)`);
+    } else if (diffDias <= 3) {
+      reporLogo.push(`🟡 *${nome}* (Acaba em ${diffDias}d)`);
+    }
+  }
+
+  let resposta = `📋 *Status do Estoque Doméstico*\n\n`;
+
+  if (urgentes.length === 0 && reporLogo.length === 0) {
+    return resposta + `🟢 Tudo em dia! Nenhum dos ${totalItens} itens precisa de reposição no momento.`;
+  }
+
+  if (urgentes.length > 0) {
+    resposta += `*Esgotados:*\n` + urgentes.join("\n") + `\n\n`;
+  }
+
+  if (reporLogo.length > 0) {
+    resposta += `*Previsão de término em breve:*\n` + reporLogo.join("\n") + `\n\n`;
+  }
+
+  resposta += `_Total de produtos monitorados: ${totalItens}_`;
+  return resposta;
+}
+
 /**
- * Envia a imagem para a API do Gemini com a estrutura REST exata (inline_data).
+ * Verifica se a nota já foi registrada na aba Historico_Compras pelo identificador.
+ */
+function notaJaCadastrada(identificador) {
+  if (!identificador) return false;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const abaHistorico = ss.getSheetByName("Historico_Compras");
+  if (!abaHistorico) return false;
+
+  const dados = abaHistorico.getDataRange().getValues();
+  for (let i = 1; i < dados.length; i++) {
+    // Coluna J (índice 9) armazena o Identificador_Nota
+    if (dados[i][9] && String(dados[i][9]).trim() === identificador) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Gemini OCR: extrai dados e normaliza nomes com JSON Schema estrito.
  */
 function extrairDadosViaGemini(base64Image, mimeType, apiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
@@ -74,28 +209,33 @@ function extrairDadosViaGemini(base64Image, mimeType, apiKey) {
 Você é um especialista em OCR e normalização de cupons fiscais brasileiros.
 Analise a nota fiscal e extraia os dados reais.
 
-Para cada produto, forneça:
-1. nome_original: O texto impresso na nota fiscal exatamente como veio, com as abreviações fiscais (ex: "FEC MAN PINHEIRO 1KG", "MARG QUALY 500G C/S").
-2. nome_padronizado: A versão por extenso, corrigida e legível em português (ex: "Fécula de Mandioca Pinheiro 1kg", "Margarina Qualy com Sal 500g"). Decifre todas as abreviações (FEC -> Fécula, P ALHO -> Pão de Alho, REQ -> Requeijão, SASSAMI -> Filé de Sassami de Frango, QJ -> Queijo, FGO -> Frango, B LACT -> Bebida Láctea, etc.).
-3. categoria: Categoria do item (Hortifrúti, Padaria, Carnes/Aves, Laticínios/Frios, Mercearia, Bebidas, Limpeza, etc.).
-4. quantidade: Numérico.
-5. unidade: Ex: un, kg, g, l.
-6. preco_unitario: Numérico decimal.
-7. preco_total: Numérico decimal.
+Campos obrigatórios:
+1. data_compra: Data no formato YYYY-MM-DD.
+2. estabelecimento: Nome ou razão social.
+3. identificador_nota: O número do CONTROLE (ex: "046617"), COO, número do Extrato NFC-e ou os 44 dígitos da chave de acesso. NUNCA deixe vazio se houver controle/chave impresso.
+4. itens:
+   - nome_original: Descrição exatamente como impressa.
+   - nome_padronizado: Nome decifrado e legível em português.
+   - categoria: Carnes/Aves, Laticínios/Frios, Hortifrúti, Padaria, Mercearia, Limpeza, Higiene, Bebidas.
+   - quantidade: Numérico.
+   - unidade: un, kg, g, l.
+   - preco_unitario: Numérico decimal.
+   - preco_total: Numérico decimal.
   `;
 
   const jsonSchema = {
     type: "OBJECT",
     properties: {
-      data_compra: { type: "STRING", description: "Formato YYYY-MM-DD" },
+      data_compra: { type: "STRING", description: "YYYY-MM-DD" },
       estabelecimento: { type: "STRING" },
+      identificador_nota: { type: "STRING", description: "Número de controle, extrato ou chave de 44 dígitos" },
       itens: {
         type: "ARRAY",
         items: {
           type: "OBJECT",
           properties: {
-            nome_original: { type: "STRING", description: "Texto exato do cupom" },
-            nome_padronizado: { type: "STRING", description: "Nome decifrado e legível" },
+            nome_original: { type: "STRING" },
+            nome_padronizado: { type: "STRING" },
             categoria: { type: "STRING" },
             quantidade: { type: "NUMBER" },
             unidade: { type: "STRING" },
@@ -137,22 +277,17 @@ Para cada produto, forneça:
     muteHttpExceptions: true
   };
 
-  const maxTentativas = 3;
-  let esperaMs = 3000;
-
-  for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+  for (let tentativa = 1; tentativa <= 3; tentativa++) {
     const response = UrlFetchApp.fetch(url, options);
     const statusCode = response.getResponseCode();
 
     if (statusCode === 200) {
       const jsonResponse = JSON.parse(response.getContentText());
-      const respostaTexto = jsonResponse.candidates[0].content.parts[0].text;
-      return JSON.parse(respostaTexto);
+      return JSON.parse(jsonResponse.candidates[0].content.parts[0].text);
     }
 
-    if ((statusCode === 503 || statusCode === 429) && tentativa < maxTentativas) {
-      Utilities.sleep(esperaMs);
-      esperaMs *= 2;
+    if ((statusCode === 503 || statusCode === 429) && tentativa < 3) {
+      Utilities.sleep(3000 * tentativa);
       continue;
     }
 
@@ -161,10 +296,7 @@ Para cada produto, forneça:
 }
 
 /**
- * Grava os itens estruturados na aba Historico_Compras.
- */
-/**
- * Grava os itens estruturados no Histórico e atualiza o Estoque Atual.
+ * Grava na planilha (incluindo o Identificador_Nota para controle de duplicidade).
  */
 function gravarNaPlanilha(dadosNota, nomeArquivo) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -182,11 +314,13 @@ function gravarNaPlanilha(dadosNota, nomeArquivo) {
       "Unidade", 
       "Preco_Unit", 
       "Preco_Total", 
+      "Identificador_Nota",
       "Arquivo_Origem"
     ]);
   }
 
   const dataCompra = dadosNota.data_compra || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  const identificador = dadosNota.identificador_nota || "";
 
   const linhasHistorico = dadosNota.itens.map(item => [
     dataCompra,
@@ -198,6 +332,7 @@ function gravarNaPlanilha(dadosNota, nomeArquivo) {
     item.unidade || "un",
     item.preco_unitario || (item.preco_total / (item.quantidade || 1)),
     item.preco_total || 0,
+    identificador,
     nomeArquivo
   ]);
 
@@ -207,7 +342,7 @@ function gravarNaPlanilha(dadosNota, nomeArquivo) {
 }
 
 /**
- * Atualiza ou insere itens na aba Estoque_Atual automaticamente.
+ * Atualiza o estoque considerando giro diferenciado para perecíveis vs não-perecíveis.
  */
 function atualizarOuInserirEstoque(ss, dadosNota) {
   let abaEstoque = ss.getSheetByName("Estoque_Atual");
@@ -215,13 +350,13 @@ function atualizarOuInserirEstoque(ss, dadosNota) {
   if (!abaEstoque) {
     abaEstoque = ss.insertSheet("Estoque_Atual");
     abaEstoque.appendRow([
-      "Item",                  // Nome padronizado
-      "Categoria",             
-      "Qtd_Total_Comprada",    
-      "Ultima_Compra",         
-      "Consumo_Medio_Dias",    
-      "Previsao_Acabar",       
-      "Status"                 
+      "Item",
+      "Categoria",
+      "Qtd_Total_Comprada",
+      "Ultima_Compra",
+      "Consumo_Medio_Dias",
+      "Previsao_Acabar",
+      "Tipo_Validade" // Perecível ou Despensa Geral
     ]);
   }
 
@@ -239,7 +374,8 @@ function atualizarOuInserirEstoque(ss, dadosNota) {
         linhaIndex: r + 1,
         qtd: Number(dados[r][2]) || 0,
         ultimaData: dados[r][3] instanceof Date ? dados[r][3] : new Date(dados[r][3]),
-        consumoDias: Number(dados[r][4]) || 30
+        consumoDias: Number(dados[r][4]) || 30,
+        tipo: dados[r][6] || "Despensa"
       });
     }
   }
@@ -247,348 +383,166 @@ function atualizarOuInserirEstoque(ss, dadosNota) {
   const novasLinhas = [];
 
   dadosNota.itens.forEach(item => {
-    // Usa prioritariamente o nome padronizado para o estoque
-    const nomePadronizado = (item.nome_padronizado || item.nome_original || "").trim();
-    const chave = nomePadronizado.toLowerCase();
+    const nome = (item.nome_padronizado || item.nome_original || "").trim();
+    const chave = nome.toLowerCase();
     const qtdComprada = Number(item.quantidade) || 1;
+    const cat = item.categoria || "Geral";
+
+    // Heurística de giro inicial: perecíveis têm ciclos curtos
+    const ehPerecivel = /(carnes|aves|latic[íi]nios|frios|hortifr[úu]ti|padaria)/i.test(cat);
+    const giroPadraoDias = ehPerecivel ? 7 : 30;
+    const tipoValidade = ehPerecivel ? "Perecível" : "Despensa";
 
     if (mapaItens.has(chave)) {
       const itemExistente = mapaItens.get(chave);
       const novaQtd = itemExistente.qtd + qtdComprada;
-      
       const dataMaisRecente = (!itemExistente.ultimaData || dataCompra > itemExistente.ultimaData) 
         ? dataCompra 
         : itemExistente.ultimaData;
 
-      const consumoDias = itemExistente.consumoDias > 0 ? itemExistente.consumoDias : 30;
-      const novaPrevisao = new Date(dataMaisRecente.getTime() + consumoDias * 86400000);
+      const dias = itemExistente.consumoDias > 0 ? itemExistente.consumoDias : giroPadraoDias;
+      const novaPrevisao = new Date(dataMaisRecente.getTime() + dias * 86400000);
 
       abaEstoque.getRange(itemExistente.linhaIndex, 3).setValue(novaQtd);
       abaEstoque.getRange(itemExistente.linhaIndex, 4).setValue(dataMaisRecente);
       abaEstoque.getRange(itemExistente.linhaIndex, 6).setValue(novaPrevisao);
-      
+
       itemExistente.qtd = novaQtd;
       itemExistente.ultimaData = dataMaisRecente;
-
     } else {
-      const consumoPadraoDias = 30;
-      const previsaoAcabar = new Date(dataCompra.getTime() + consumoPadraoDias * 86400000);
+      const previsaoAcabar = new Date(dataCompra.getTime() + giroPadraoDias * 86400000);
 
       novasLinhas.push([
-        nomePadronizado,
-        item.categoria || "Geral",
+        nome,
+        cat,
         qtdComprada,
         dataCompra,
-        consumoPadraoDias,
+        giroPadraoDias,
         previsaoAcabar,
-        ""
+        tipoValidade
       ]);
 
       mapaItens.set(chave, {
         linhaIndex: dados.length + novasLinhas.length,
         qtd: qtdComprada,
         ultimaData: dataCompra,
-        consumoDias: consumoPadraoDias
+        consumoDias: giroPadraoDias,
+        tipo: tipoValidade
       });
     }
   });
 
   if (novasLinhas.length > 0) {
     abaEstoque.getRange(abaEstoque.getLastRow() + 1, 1, novasLinhas.length, novasLinhas[0].length).setValues(novasLinhas);
-    Logger.log(`Adicionados ${novasLinhas.length} novos produtos padronizados ao Estoque_Atual.`);
   }
 }
 
 /**
- * Verifica o estoque e envia e-mail com os itens a vencer/repor nos próximos 2 dias.
+ * Disparo matinal: e-mail dividido em 'Atenção ao Vencimento' e 'Lista de Reposição'.
  */
 function verificarEstoqueENotificar() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const abaEstoque = ss.getSheetByName("Estoque_Atual");
-
-  if (!abaEstoque) {
-    Logger.log("Aba 'Estoque_Atual' não encontrada.");
-    return;
-  }
+  if (!abaEstoque) return;
 
   const dados = abaEstoque.getDataRange().getValues();
-  if (dados.length <= 1) {
-    Logger.log("Nenhum dado na aba Estoque_Atual.");
-    return;
-  }
+  if (dados.length <= 1) return;
 
   const hoje = new Date();
   hoje.setHours(0, 0, 0, 0);
 
-  const itensParaRepor = [];
+  const pereciveisAlerta = [];
+  const despensaAlerta = [];
 
-  // Pula a linha 0 (cabeçalho)
   for (let i = 1; i < dados.length; i++) {
-    const nomeItem = dados[i][0]; // Coluna A
-    const previsaoAcabar = dados[i][5]; // Coluna F (Data)
-    const status = dados[i][6]; // Coluna G
+    const nome = dados[i][0];
+    const dataPrevisao = dados[i][5];
+    const tipo = dados[i][6] || "Despensa";
 
-    if (!nomeItem || !(previsaoAcabar instanceof Date)) continue;
+    if (!nome || !(dataPrevisao instanceof Date)) continue;
 
-    // Diferença em dias
-    const diffTempo = previsaoAcabar.getTime() - hoje.getTime();
-    const diasRestantes = Math.ceil(diffTempo / (1000 * 60 * 60 * 24));
+    const diffDias = Math.ceil((dataPrevisao.getTime() - hoje.getTime()) / 86400000);
 
-    // Se estiver a 2 dias ou menos de acabar, ou vencido
-    if (diasRestantes <= 2) {
-      itensParaRepor.push({
-        item: nomeItem,
-        dias: diasRestantes,
-        dataPrevisao: Utilities.formatDate(previsaoAcabar, Session.getScriptTimeZone(), "dd/MM/yyyy")
-      });
+    if (diffDias <= 2) {
+      const obj = {
+        item: nome,
+        dias: diffDias,
+        dataPrevisao: Utilities.formatDate(dataPrevisao, Session.getScriptTimeZone(), "dd/MM/yyyy")
+      };
+
+      if (tipo === "Perecível") {
+        pereciveisAlerta.push(obj);
+      } else {
+        despensaAlerta.push(obj);
+      }
     }
   }
 
-  if (itensParaRepor.length > 0) {
-    enviarEmailAlerta(itensParaRepor);
-    Logger.log(`E-mail enviado com ${itensParaRepor.length} itens sugeridos para reposição.`);
-  } else {
-    Logger.log("Estoque em dia. Nenhuma notificação necessária hoje.");
+  if (pereciveisAlerta.length > 0 || despensaAlerta.length > 0) {
+    enviarEmailDividido(pereciveisAlerta, despensaAlerta);
   }
 }
 
 /**
- * Monta e envia o e-mail de alerta formatado.
+ * Monta e envia o e-mail em dois blocos.
  */
-function enviarEmailAlerta(listaItens) {
-  const destinatario = Session.getActiveUser().getEmail() || "rodolforicardotech@gmail.com";
-  const assunto = `🛒 [Alerta Despensa] Lista de Reposição - ${listaItens.length} itens precisando de atenção`;
+function enviarEmailDividido(pereciveis, despensa) {
+  const destinatario = Session.getActiveUser().getEmail();
+  const assunto = `🛒 [Alerta Despensa] ${pereciveis.length + despensa.length} itens demandam atenção hoje`;
 
-  let corpoTexto = "Olá!\n\nAqui está a lista de itens da sua despensa que precisam de reposição:\n\n";
-  let corpoHtml = `
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-      <h2 style="color: #d93025;">🛒 Alerta de Reposição de Estoque</h2>
-      <p>Os seguintes itens estão acabando ou já atingiram a previsão de consumo:</p>
-      <table style="border-collapse: collapse; width: 100%; max-width: 500px;">
-        <tr style="background-color: #f2f2f2; text-align: left;">
-          <th style="padding: 8px; border: 1px solid #ddd;">Item</th>
-          <th style="padding: 8px; border: 1px solid #ddd;">Previsão</th>
-          <th style="padding: 8px; border: 1px solid #ddd;">Situação</th>
-        </tr>
+  let html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #222; max-width: 600px;">
+      <h2 style="color: #1a73e8; margin-bottom: 5px;">Relatório de Estoque e Consumo</h2>
+      <p style="color: #666; font-size: 14px;">Atualizado automaticamente com base nas notas fiscais.</p>
   `;
 
-  listaItens.forEach(i => {
-    let situacao = i.dias <= 0 ? `<b style="color:red;">Acabou!</b>` : `Acaba em ${i.dias} dia(s)`;
-    corpoTexto += `- ${i.item}: Previsão ${i.dataPrevisao} (${i.dias <= 0 ? 'URGENTE' : i.dias + ' dia(s)'})\n`;
-    corpoHtml += `
-      <tr>
-        <td style="padding: 8px; border: 1px solid #ddd;">${i.item}</td>
-        <td style="padding: 8px; border: 1px solid #ddd;">${i.dataPrevisao}</td>
-        <td style="padding: 8px; border: 1px solid #ddd;">${situacao}</td>
-      </tr>
+  // BLOCO 1: PERECÍVEIS
+  if (pereciveis.length > 0) {
+    html += `
+      <div style="background: #fff3f0; border-left: 4px solid #d93025; padding: 12px; margin-top: 15px;">
+        <h3 style="color: #d93025; margin: 0 0 8px 0;">🥩 Perecíveis / Consumo Imediato</h3>
+        <p style="font-size: 13px; margin: 0 0 10px 0;">Itens abertos ou refrigerados próximos do limite de conservação:</p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
     `;
-  });
+    pereciveis.forEach(p => {
+      const tag = p.dias <= 0 ? `<b style="color:red;">Consumir Já!</b>` : `Resta ${p.dias} dia(s)`;
+      html += `<tr><td style="padding: 4px 0;">• <b>${p.item}</b></td><td style="text-align: right;">${tag}</td></tr>`;
+    });
+    html += `</table></div>`;
+  }
 
-  corpoTexto += "\nAbra sua planilha para conferir o estoque completo.";
-  corpoHtml += `
-      </table>
-      <p style="margin-top: 20px; font-size: 12px; color: #777;">Automação gerada pelo Google Apps Script & Gemini.</p>
+  // BLOCO 2: DESPENSA
+  if (despensa.length > 0) {
+    html += `
+      <div style="background: #f1f8e9; border-left: 4px solid #388e3c; padding: 12px; margin-top: 15px;">
+        <h3 style="color: #2e7d32; margin: 0 0 8px 0;">📦 Lista de Compras (Despensa)</h3>
+        <p style="font-size: 13px; margin: 0 0 10px 0;">Itens secos e utilidades cujo ciclo estimado terminou:</p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+    `;
+    despensa.forEach(d => {
+      const tag = d.dias <= 0 ? `<b style="color:#d93025;">Esgotado</b>` : `Acaba em ${d.dias} dia(s)`;
+      html += `<tr><td style="padding: 4px 0;">• <b>${d.item}</b></td><td style="text-align: right;">${tag}</td></tr>`;
+    });
+    html += `</table></div>`;
+  }
+
+  html += `
+      <p style="margin-top: 25px; font-size: 12px; color: #888;">Consulte a planilha ou use o comando /estoque no Telegram.</p>
     </div>
   `;
 
   MailApp.sendEmail({
     to: destinatario,
     subject: assunto,
-    body: corpoTexto,
-    htmlBody: corpoHtml
+    htmlBody: html
   });
 }
 
-/**
- * Função de teste: dispara um e-mail com dados simulados
- * para você validar o visual na sua caixa de entrada.
- */
-function testarEnvioEmailAlerta() {
-  const itensSimulados = [
-    {
-      item: "Arroz Parboilizado 5kg",
-      dias: 0,
-      dataPrevisao: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy")
-    },
-    {
-      item: "Café Torrado e Moído 250g",
-      dias: 1,
-      dataPrevisao: Utilities.formatDate(new Date(Date.now() + 86400000), Session.getScriptTimeZone(), "dd/MM/yyyy")
-    },
-    {
-      item: "Detergente Líquido 500ml",
-      dias: 2,
-      dataPrevisao: Utilities.formatDate(new Date(Date.now() + 2 * 86400000), Session.getScriptTimeZone(), "dd/MM/yyyy")
-    }
-  ];
-
-  enviarEmailAlerta(itensSimulados);
-  Logger.log("E-mail de teste enviado com sucesso!");
-}
-
-/**
- * Ponto de entrada do Webhook: o Telegram dispara esta função via POST ao receber mensagens.
- */
-/**
- * Ponto de entrada do Webhook Telegram com salvamento direto no Drive.
- */
-/**
- * Ponto de entrada do Webhook Telegram blindado.
- */
-/**
- * Ponto de entrada do Webhook Telegram com salvamento e movimentação para 'Processadas'.
- */
-function doPost(e) {
-  const props = PropertiesService.getScriptProperties();
-  const telegramToken = (props.getProperty("TELEGRAM_BOT_TOKEN") || "").trim();
-  const geminiKey = (props.getProperty("GEMINI_API_KEY") || "").replace(/["'\s]/g, "");
-  const folderEntradaId = (props.getProperty("FOLDER_ENTRADA_ID") || "").trim();
-  const folderProcessadasId = (props.getProperty("FOLDER_PROCESSADAS_ID") || "").trim();
-
-  try {
-    if (!e || !e.postData || !e.postData.contents) {
-      return HtmlService.createHtmlOutput("Sem dados");
-    }
-
-    const contents = JSON.parse(e.postData.contents);
-    if (!contents.message) return HtmlService.createHtmlOutput("Sem mensagem");
-
-    const chatId = contents.message.chat.id;
-    const photoArray = contents.message.photo;
-
-    if (!photoArray || photoArray.length === 0) {
-      enviarMensagemTelegram(chatId, "👋 Por favor, envie uma foto da sua nota fiscal!", telegramToken);
-      return HtmlService.createHtmlOutput();
-    }
-
-    enviarMensagemTelegram(chatId, "⏳ Imagem recebida! Baixando e processando...", telegramToken);
-
-    // Pega a versão de melhor resolução
-    const fileId = photoArray[photoArray.length - 1].file_id;
-
-    // 1. Busca o caminho do arquivo
-    const getFileUrl = `https://api.telegram.org/bot${telegramToken}/getFile?file_id=${fileId}`;
-    const fileRes = UrlFetchApp.fetch(getFileUrl, { muteHttpExceptions: true });
-    const fileJson = JSON.parse(fileRes.getContentText());
-
-    if (!fileJson.ok || !fileJson.result.file_path) {
-      enviarMensagemTelegram(chatId, "❌ Falha ao obter dados da imagem no Telegram.", telegramToken);
-      return HtmlService.createHtmlOutput();
-    }
-
-    const downloadUrl = `https://api.telegram.org/file/bot${telegramToken}/${fileJson.result.file_path}`;
-    
-    // 2. Baixa o blob binário da foto
-    const responseImg = UrlFetchApp.fetch(downloadUrl, {
-      headers: { "Accept": "image/*" },
-      muteHttpExceptions: true
-    });
-    
-    const blob = responseImg.getBlob();
-    const tamanhoBytes = blob.getBytes().length;
-
-    if (tamanhoBytes < 1000) {
-      enviarMensagemTelegram(chatId, `⚠ Erro: a foto recebida está vazia (${tamanhoBytes} bytes).`, telegramToken);
-      return HtmlService.createHtmlOutput();
-    }
-
-    // 3. Salva no Google Drive (pasta de Entrada)
-    const nomeArquivo = `Telegram_${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss")}.jpg`;
-    blob.setName(nomeArquivo);
-    
-    const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
-    const driveFile = pastaEntrada.createFile(blob);
-
-    // 4. Converte os bytes para Base64
-    const imageBytes = driveFile.getBlob().getBytes();
-    const imageBase64 = Utilities.base64Encode(imageBytes);
-    const mimeType = driveFile.getMimeType() || "image/jpeg";
-
-    // 5. Envia para o Gemini
-    const dadosNota = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
-
-    if (!dadosNota || !dadosNota.itens || dadosNota.itens.length === 0) {
-      enviarMensagemTelegram(chatId, "⚠ Não consegui reconhecer os produtos na imagem. Tente aproximar um pouco mais.", telegramToken);
-      return HtmlService.createHtmlOutput();
-    }
-
-    // 6. Grava no Histórico e Estoque
-    gravarNaPlanilha(dadosNota, nomeArquivo);
-
-    // 7. MOVE O ARQUIVO PARA A PASTA DE PROCESSADAS
-    if (folderProcessadasId) {
-      const pastaProcessadas = DriveApp.getFolderById(folderProcessadasId);
-      driveFile.moveTo(pastaProcessadas);
-    }
-
-    // 8. Envia o resumo formatado
-    const total = dadosNota.itens.reduce((acc, it) => acc + (Number(it.preco_total) || 0), 0);
-    const msg = 
-      `✅ *Nota Fiscal Processada!*\n\n` +
-      `🏪 *Estabelecimento:* ${dadosNota.estabelecimento || "Mercado"}\n` +
-      `📅 *Data:* ${dadosNota.data_compra || "Não identificada"}\n` +
-      `🛒 *Itens:* ${dadosNota.itens.length}\n` +
-      `💵 *Total:* R$ ${total.toFixed(2).replace('.', ',')}\n\n` +
-      `_Arquivo arquivado em Processadas e planilha atualizada!_`;
-
-    enviarMensagemTelegram(chatId, msg, telegramToken);
-
-  } catch (err) {
-    Logger.log("Erro fatal no doPost: " + err.toString());
-  }
-
-  return HtmlService.createHtmlOutput();
-}
-
-/**
- * Busca a URL pública temporária da imagem nos servidores do Telegram.
- */
-function obterUrlArquivoTelegram(fileId, token) {
-  const getFileUrl = `https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`;
-  const res = UrlFetchApp.fetch(getFileUrl);
-  const data = JSON.parse(res.getContentText());
-  const filePath = data.result.file_path;
-  return `https://api.telegram.org/file/bot${token}/${filePath}`;
-}
-
-/**
- * Envia mensagem de texto de volta ao usuário no Telegram.
- */
 function enviarMensagemTelegram(chatId, texto, token) {
-  const url = `https://api.telegram.org/bot${token}/sendMessage`;
-  const payload = {
-    chat_id: chatId,
-    text: texto,
-    parse_mode: "Markdown"
-  };
-
-  UrlFetchApp.fetch(url, {
+  UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "post",
     contentType: "application/json",
-    payload: JSON.stringify(payload),
+    payload: JSON.stringify({ chat_id: chatId, text: texto, parse_mode: "Markdown" }),
     muteHttpExceptions: true
   });
-}
-
-/**
- * Registra a URL do Web App diretamente na API do Telegram.
- */
-function registrarWebhookTelegram() {
-  const props = PropertiesService.getScriptProperties();
-  const token = props.getProperty("TELEGRAM_BOT_TOKEN");
-  
-  // Substitua pela URL exata da sua implantação:
-  const webAppUrl = "https://script.google.com/macros/s/AKfycbzfM5uOzIRSGrd6q_PFCJwWQvY0TgIef9b5QEwOdF8C_j5pnm7ndgngy04S13VcG7TT/exec";
-
-  const url = `https://api.telegram.org/bot${token}/setWebhook?url=${encodeURIComponent(webAppUrl)}`;
-  const response = UrlFetchApp.fetch(url);
-  Logger.log("Retorno do Telegram: " + response.getContentText());
-}
-
-function checarStatusWebhook() {
-  const props = PropertiesService.getScriptProperties();
-  const token = props.getProperty("TELEGRAM_BOT_TOKEN");
-  
-  const res = UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/getWebhookInfo`);
-  Logger.log("Status atual do Webhook: " + res.getContentText());
 }
