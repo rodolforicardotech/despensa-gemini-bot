@@ -1,6 +1,5 @@
 /**
- * Ponto de entrada do Webhook Telegram.
- * Trata fotos (processamento com OCR) e mensagens de texto (comandos /estoque, /compras, /ajuda).
+ * Webhook do Telegram adaptado: direto ao ponto e sem complexidade.
  */
 function doPost(e) {
   const props = PropertiesService.getScriptProperties();
@@ -10,68 +9,54 @@ function doPost(e) {
   const folderProcessadasId = (props.getProperty("FOLDER_PROCESSADAS_ID") || "").trim();
 
   try {
-    if (!e || !e.postData || !e.postData.contents) {
-      return HtmlService.createHtmlOutput("Sem dados");
-    }
+    if (!e || !e.postData || !e.postData.contents) return HtmlService.createHtmlOutput();
 
     const contents = JSON.parse(e.postData.contents);
-    if (!contents.message) return HtmlService.createHtmlOutput("Sem mensagem");
+    if (!contents.message) return HtmlService.createHtmlOutput();
 
     const chatId = contents.message.chat.id;
-    const textoMensagem = (contents.message.text || "").trim().toLowerCase();
+    const texto = (contents.message.text || "").trim().toLowerCase();
     const photoArray = contents.message.photo;
 
-    // --- ROTEAMENTO DE COMANDOS DE TEXTO ---
-    if (textoMensagem === "/estoque" || textoMensagem === "/compras") {
-      const relatorio = gerarRelatorioEstoqueTelegram();
-      enviarMensagemTelegram(chatId, relatorio, telegramToken);
+    // 1. Comando simples de consulta
+    if (texto === "/estoque" || texto === "/compras") {
+      const respostaEstoque = consultarEstoqueTelegram();
+      enviarMensagemTelegram(chatId, respostaEstoque, telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    if (textoMensagem === "/start" || textoMensagem === "/ajuda") {
-      const msgAjuda = 
-        `👋 *Assistente de Compras & Estoque*\n\n` +
-        `Envie ou tire uma foto do cupom fiscal para registrar suas compras.\n\n` +
-        `*Comandos disponíveis:*\n` +
-        `• /estoque ou /compras : Lista itens esgotados ou a vencer.`;
-      enviarMensagemTelegram(chatId, msgAjuda, telegramToken);
+    if (texto === "/start" || texto === "/ajuda") {
+      enviarMensagemTelegram(chatId, "Mande uma foto de nota fiscal para cadastrar ou digite /estoque para ver os itens.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // Se não for foto e nem comando conhecido
+    // Se não for foto
     if (!photoArray || photoArray.length === 0) {
-      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal ou use /estoque para consultar.", telegramToken);
+      enviarMensagemTelegram(chatId, "Envie uma foto da nota fiscal ou digite /estoque.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // --- PROCESSAMENTO DA FOTO ---
-    enviarMensagemTelegram(chatId, "⏳ Imagem recebida! Verificando autenticidade...", telegramToken);
+    enviarMensagemTelegram(chatId, "Lendo nota fiscal...", telegramToken);
 
+    // 2. Baixa a foto do Telegram
     const fileId = photoArray[photoArray.length - 1].file_id;
     const getFileUrl = `https://api.telegram.org/bot${telegramToken}/getFile?file_id=${fileId}`;
     const fileRes = UrlFetchApp.fetch(getFileUrl, { muteHttpExceptions: true });
     const fileJson = JSON.parse(fileRes.getContentText());
 
     if (!fileJson.ok || !fileJson.result.file_path) {
-      enviarMensagemTelegram(chatId, "❌ Falha ao obter dados da imagem no Telegram.", telegramToken);
+      enviarMensagemTelegram(chatId, "Erro ao baixar a imagem do Telegram.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
     const downloadUrl = `https://api.telegram.org/file/bot${telegramToken}/${fileJson.result.file_path}`;
-    const responseImg = UrlFetchApp.fetch(downloadUrl, {
-      headers: { "Accept": "image/*" },
-      muteHttpExceptions: true
-    });
-
+    const responseImg = UrlFetchApp.fetch(downloadUrl, { headers: { "Accept": "image/*" }, muteHttpExceptions: true });
     const blob = responseImg.getBlob();
-    if (blob.getBytes().length < 1000) {
-      enviarMensagemTelegram(chatId, "⚠ A imagem recebida está corrompida ou vazia.", telegramToken);
-      return HtmlService.createHtmlOutput();
-    }
 
     const nomeArquivo = `Telegram_${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss")}.jpg`;
     blob.setName(nomeArquivo);
 
+    // Salva na entrada e converte
     const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
     const driveFile = pastaEntrada.createFile(blob);
 
@@ -79,51 +64,67 @@ function doPost(e) {
     const imageBase64 = Utilities.base64Encode(imageBytes);
     const mimeType = driveFile.getMimeType() || "image/jpeg";
 
+    // 3. Processa no Gemini com as regras existentes (deduplicação e padronização)
     const dadosNota = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
 
     if (!dadosNota || !dadosNota.itens || dadosNota.itens.length === 0) {
-      enviarMensagemTelegram(chatId, "⚠ Não consegui reconhecer os produtos na imagem. Tente uma foto mais nítida.", telegramToken);
+      enviarMensagemTelegram(chatId, "Não consegui identificar itens nesta foto.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // --- VALIDAÇÃO 1: DEDUPLICAÇÃO ---
-    const identificadorNota = (dadosNota.identificador_nota || "").trim();
-    if (identificadorNota && notaJaCadastrada(identificadorNota)) {
-      if (folderProcessadasId) {
-        driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
-      }
-      enviarMensagemTelegram(
-        chatId, 
-        `⚠️ *Nota já registrada anteriormente!*\nIdentificador: \`${identificadorNota}\`\nNenhum item duplicado foi adicionado.`, 
-        telegramToken
-      );
+    // Se já foi cadastrada, avisa e não duplica
+    const identificador = (dadosNota.identificador_nota || "").trim();
+    if (identificador && notaJaCadastrada(identificador)) {
+      if (folderProcessadasId) driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
+      enviarMensagemTelegram(chatId, `⚠️ Esta nota (${identificador}) já tinha sido cadastrada!`, telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // Grava dados
+    // 4. Grava no seu histórico e no seu estoque consolidado
     gravarNaPlanilha(dadosNota, nomeArquivo);
 
+    // Move para processadas
     if (folderProcessadasId) {
       driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
     }
 
+    // 5. Retorno curto e limpo no Telegram
     const total = dadosNota.itens.reduce((acc, it) => acc + (Number(it.preco_total) || 0), 0);
-    const msg = 
-      `✅ *Nota Fiscal Processada!*\n\n` +
-      `🏪 *Estabelecimento:* ${dadosNota.estabelecimento || "Mercado"}\n` +
-      `📅 *Data:* ${dadosNota.data_compra || "Hoje"}\n` +
-      `🔖 *Doc/Controle:* \`${identificadorNota || "S/N"}\`\n` +
-      `🛒 *Itens:* ${dadosNota.itens.length}\n` +
-      `💵 *Total:* R$ ${total.toFixed(2).replace('.', ',')}\n\n` +
-      `_Estoque atualizado com sucesso!_`;
-
-    enviarMensagemTelegram(chatId, msg, telegramToken);
+    const mercado = dadosNota.estabelecimento || "Mercado";
+    const qtd = dadosNota.itens.length;
+    enviarMensagemTelegram(chatId, `✅ Salvo!\n🏪 ${mercado}\n📦 ${qtd} itens cadastrados\n💰 Total: R$ ${total.toFixed(2).replace('.', ',')}`, telegramToken);
 
   } catch (err) {
     Logger.log("Erro no doPost: " + err.toString());
   }
 
   return HtmlService.createHtmlOutput();
+}
+
+/**
+ * Consulta simples: lê a aba Estoque_Atual existente e lista os itens e quantidades.
+ */
+function consultarEstoqueTelegram() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const abaEstoque = ss.getSheetByName("Estoque_Atual");
+
+  if (!abaEstoque || abaEstoque.getLastRow() <= 1) {
+    return "Nenhum item encontrado no estoque.";
+  }
+
+  // Pega os itens da aba Estoque_Atual (Item na Coluna A, Qtd na Coluna C)
+  const dados = abaEstoque.getDataRange().getValues();
+  let resposta = "📦 *Itens no Estoque:*\n\n";
+
+  for (let i = 1; i < dados.length; i++) {
+    const nome = dados[i][0];
+    const qtd = dados[i][2];
+    if (nome) {
+      resposta += `• ${nome} (${qtd})\n`;
+    }
+  }
+
+  return resposta;
 }
 
 /**
