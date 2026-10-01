@@ -546,3 +546,71 @@ function enviarMensagemTelegram(chatId, texto, token) {
     muteHttpExceptions: true
   });
 }
+
+/**
+ * Processa notas fiscais colocadas diretamente na pasta de entrada do Google Drive.
+ * Mantém paridade com o Telegram: deduplica, normaliza nomes e move para 'Processadas'.
+ */
+function processarNotasFiscais() {
+  const props = PropertiesService.getScriptProperties();
+  const apiKey = (props.getProperty("GEMINI_API_KEY") || "").replace(/["'\s]/g, "");
+  const folderEntradaId = (props.getProperty("FOLDER_ENTRADA_ID") || "").trim();
+  const folderProcessadasId = (props.getProperty("FOLDER_PROCESSADAS_ID") || "").trim();
+
+  if (!apiKey || !folderEntradaId || !folderProcessadasId) {
+    throw new Error("Configure GEMINI_API_KEY, FOLDER_ENTRADA_ID e FOLDER_PROCESSADAS_ID nas Propriedades do Script.");
+  }
+
+  const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
+  const pastaProcessadas = DriveApp.getFolderById(folderProcessadasId);
+  const arquivos = pastaEntrada.getFiles();
+
+  const mimeTypesValidos = ["image/jpeg", "image/png", "image/webp", "image/heic"];
+  let processados = 0;
+
+  while (arquivos.hasNext()) {
+    const arquivo = arquivos.next();
+    const mimeType = arquivo.getMimeType();
+
+    if (!mimeTypesValidos.includes(mimeType)) {
+      Logger.log(`Ficheiro ignorado (formato incompatível): ${arquivo.getName()}`);
+      continue;
+    }
+
+    Logger.log(`A processar do Drive: ${arquivo.getName()}...`);
+
+    try {
+      const imageBytes = arquivo.getBlob().getBytes();
+      const imageBase64 = Utilities.base64Encode(imageBytes);
+
+      // 1. Extração estruturada via Gemini
+      const dadosNota = extrairDadosViaGemini(imageBase64, mimeType, apiKey);
+
+      if (!dadosNota || !dadosNota.itens || dadosNota.itens.length === 0) {
+        Logger.log(`Nenhum item detetado em: ${arquivo.getName()}`);
+        continue;
+      }
+
+      // 2. Validação de duplicidade por chave/controlo
+      const identificador = (dadosNota.identificador_nota || "").trim();
+      if (identificador && notaJaCadastrada(identificador)) {
+        Logger.log(`Aviso: Cupom ${identificador} já existe na planilha. A mover sem duplicar...`);
+        arquivo.moveTo(pastaProcessadas);
+        continue;
+      }
+
+      // 3. Registo nas abas Historico_Compras e Estoque_Atual
+      gravarNaPlanilha(dadosNota, arquivo.getName());
+      Logger.log(`Gravados ${dadosNota.itens.length} itens do ficheiro ${arquivo.getName()}.`);
+
+      // 4. Arquivo na pasta de processadas
+      arquivo.moveTo(pastaProcessadas);
+      processados++;
+
+    } catch (err) {
+      Logger.log(`Erro ao processar ${arquivo.getName()}: ${err.message}`);
+    }
+  }
+
+  Logger.log(`Concluído. Total de notas do Drive processadas: ${processados}`);
+}
