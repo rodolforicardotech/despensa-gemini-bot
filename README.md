@@ -74,7 +74,10 @@ Este projeto automatiza todo o ciclo com **zero esforço de digitação**:
 
     Ferramentas de Desenvolvimento: @google/clasp, Git, GitHub
 
-    📁 Estrutura do RepositórioPlaintext├── src/
+
+
+## 📁 Estrutura do RepositórioPlaintext
+├── src/
 │   ├── Code.js              # Lógica do Webhook, Gemini OCR, persistência e comandos
 │   └── appsscript.json      # Manifesto do Google Apps Script
 ├── .gitignore
@@ -83,9 +86,48 @@ Este projeto automatiza todo o ciclo com **zero esforço de digitação**:
 
 ---
 
-## ⚙️ Configuração e Implantação1. Pré-requisitosConta no Telegram e bot criado via @BotFather (obtenha o token HTTP da API).Chave de API no Google AI Studio.Uma planilha no Google Sheets com pastas criadas no Google Drive para arquivos de entrada e processadas.Node.js instalado com o clasp:Bashnpm install -g @google/clasp
+⚙️ Configuração e Implantação
+1. Pré-requisitos
+
+    Conta no Telegram e bot criado via @BotFather (obtenha o token HTTP da API).
+
+    Chave de API no Google AI Studio.
+
+    Uma planilha no Google Sheets com pastas criadas no Google Drive para arquivos de entrada e processadas.
+
+    Node.js instalado com o clasp:
+
+```npm install -g @google/clasp```
+
+
 2. Clonar e VincularBashgit clone [https://github.com/SEU_USUARIO/SEU_REPOSITORIO.git](https://github.com/SEU_USUARIO/SEU_REPOSITORIO.git)
 cd SEU_REPOSITORIO
 clasp login
 clasp clone "SEU_SCRIPT_ID"
-3. Propriedades do Script (Script Properties)No editor do Google Apps Script, acesse Configurações do Projeto e adicione:PropriedadeDescriçãoTELEGRAM_BOT_TOKENToken retornado pelo @BotFatherGEMINI_API_KEYChave de API do Google GeminiFOLDER_ENTRADA_IDID da pasta do Drive para recebimento das fotosFOLDER_PROCESSADAS_IDID da pasta do Drive de notas concluídas4. Deploy do Web AppClique em Implantar > Nova implantação.Tipo: Aplicativo da Web.Executar como: Eu.Quem pode acessar: Qualquer pessoa.Copie a URL gerada (terminada em /exec).5. Registrar o WebhookExecute no Apps Script a função registrarWebhookTelegram(), passando a URL do seu Web App para registrar o endpoint na API do Telegram.📊 Próximos Passos (Engenharia de Dados)Ingestão periódica dos dados da planilha para camada Bronze em formato Delta Lake.Modelagem dimensional Star Schema na camada Silver (dim_produto, dim_estabelecimento, fato_compras) com resolução de entidades via GTIN/EAN.Construção de Data Marts analíticos (Gold) para métricas de inflação pessoal (IPCA próprio) e comparativo de preços entre estabelecimentos.
+3. Propriedades do Script (Script Properties)
+Propriedade,Descrição
+TELEGRAM_BOT_TOKEN,Token retornado pelo @BotFather
+GEMINI_API_KEY,Chave de API do Google Gemini
+FOLDER_ENTRADA_ID,ID da pasta do Drive para recebimento das fotos
+FOLDER_PROCESSADAS_ID,ID da pasta do Drive de notas concluídas
+
+4. Deploy do Web App
+
+    Clique em Implantar > Nova implantação.
+
+    Tipo: Aplicativo da Web.
+
+    Executar como: Eu.
+
+    Quem pode acessar: Qualquer pessoa.
+
+    Copie a URL gerada (terminada em /exec).
+
+5. Registrar o Webhook
+
+Execute no Apps Script a função registrarWebhookTelegram(), passando a URL do seu Web App para registrar o endpoint na API do Telegram.
+
+## 📊 Próximos Passos (Engenharia de Dados)
+Ingestão periódica dos dados da planilha para camada Bronze em formato Delta Lake.
+Modelagem dimensional Star Schema na camada Silver (dim_produto, dim_estabelecimento, fato_compras) com resolução de entidades via GTIN/EAN.
+Construção de Data Marts analíticos (Gold) para métricas de inflação pessoal (IPCA próprio) e comparativo de preços entre estabelecimentos.
