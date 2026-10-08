@@ -1,4 +1,4 @@
-# 🛒 Smart Grocery & Receipt Tracker
+# 🛒 Leitor de Notas Fiscais Inteligente
 
 Pipeline ponta a ponta de ingestão, OCR multimodal e controle de estoque doméstico utilizando **Telegram Bot**, **Google Apps Script**, **Gemini API** e **Google Sheets**.
 
@@ -16,6 +16,7 @@ Este projeto automatiza todo o ciclo com **zero esforço de digitação**:
 5. Consultas rápidas podem ser feitas via comando `/estoque` diretamente no chat do Telegram.
 
 ---
+
 
 ## 🏗 Arquitetura da Solução
 
@@ -42,8 +43,10 @@ Este projeto automatiza todo o ciclo com **zero esforço de digitação**:
           │
           ▼
 [ Feedback Telegram ] ◄── Confirmação com total, local e quantidade de itens
+```
+---
 
-🚀 Funcionalidades Principais
+## 🚀 Funcionalidades Principais
 
     Ingestão Simples via Telegram: Envio direto de fotos de cupons fiscais pelo celular com feedback em tempo real.
 
@@ -57,7 +60,9 @@ Este projeto automatiza todo o ciclo com **zero esforço de digitação**:
 
     Alertas Automáticos: Rotina diária de e-mail identificando itens esgotados ou a vencer nos próximos dias.
 
-🛠 Tecnologias Utilizadas
+---
+
+## 🛠 Tecnologias Utilizadas
 
     Linguagem & Runtime: JavaScript / Google Apps Script (V8 Engine)
 
@@ -75,7 +80,10 @@ Este projeto automatiza todo o ciclo com **zero esforço de digitação**:
 ├── .gitignore
 ├── README.md
 └── LICENSE
-⚙️ Configuração e Implantação1. Pré-requisitosConta no Telegram e bot criado via @BotFather (obtenha o token HTTP da API).Chave de API no Google AI Studio.Uma planilha no Google Sheets com pastas criadas no Google Drive para arquivos de entrada e processadas.Node.js instalado com o clasp:Bashnpm install -g @google/clasp
+
+---
+
+## ⚙️ Configuração e Implantação1. Pré-requisitosConta no Telegram e bot criado via @BotFather (obtenha o token HTTP da API).Chave de API no Google AI Studio.Uma planilha no Google Sheets com pastas criadas no Google Drive para arquivos de entrada e processadas.Node.js instalado com o clasp:Bashnpm install -g @google/clasp
 2. Clonar e VincularBashgit clone [https://github.com/SEU_USUARIO/SEU_REPOSITORIO.git](https://github.com/SEU_USUARIO/SEU_REPOSITORIO.git)
 cd SEU_REPOSITORIO
 clasp login
