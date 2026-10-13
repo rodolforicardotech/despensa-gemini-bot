@@ -82,6 +82,7 @@ function doPost(e) {
 
     // 4. Grava no seu histórico e no seu estoque consolidado
     gravarNaPlanilha(dadosNota, nomeArquivo);
+    salvarNoFirebase(dadosNota, nomeArquivo);
 
     // Move para processadas
     if (folderProcessadasId) {
@@ -602,6 +603,7 @@ function processarNotasFiscais() {
 
       // 3. Registo nas abas Historico_Compras e Estoque_Atual
       gravarNaPlanilha(dadosNota, arquivo.getName());
+      salvarNoFirebase(dadosNota, arquivo.getName());
       Logger.log(`Gravados ${dadosNota.itens.length} itens do ficheiro ${arquivo.getName()}.`);
 
       // 4. Arquivo na pasta de processadas
@@ -615,3 +617,98 @@ function processarNotasFiscais() {
 
   Logger.log(`Concluído. Total de notas do Drive processadas: ${processados}`);
 }
+
+/**
+ * Salva a transação bruta e atualiza o inventário no Firebase Realtime Database.
+ */
+function salvarNoFirebase(dadosNota, nomeArquivo) {
+  const props = PropertiesService.getScriptProperties();
+  const dbUrl = (props.getProperty("FIREBASE_DB_URL") || "").trim().replace(/\/$/, "");
+  const dbSecret = (props.getProperty("FIREBASE_SECRET") || "").trim();
+
+  if (!dbUrl || !dbSecret) {
+    Logger.log("Aviso: Configurações do Firebase ausentes. Pulando gravação no banco.");
+    return;
+  }
+
+  const authQuery = `?auth=${dbSecret}`;
+  const dataHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+
+  // 1. Grava a compra completa no nó /compras
+  const payloadCompra = {
+    estabelecimento: dadosNota.estabelecimento || "Supermercado",
+    data_compra: dadosNota.data_compra || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd"),
+    identificador_nota: dadosNota.identificador_nota || "",
+    arquivo_origem: nomeArquivo,
+    processado_em: dataHoje,
+    itens: dadosNota.itens || []
+  };
+
+  try {
+    const urlCompras = `${dbUrl}/compras.json${authQuery}`;
+    UrlFetchApp.fetch(urlCompras, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payloadCompra),
+      muteHttpExceptions: true
+    });
+  } catch (err) {
+    Logger.log("Erro ao salvar compra no Firebase: " + err.message);
+  }
+
+  // 2. Atualiza o saldo do inventário no nó /estoque (Upsert por chave padronizada)
+  if (dadosNota.itens && dadosNota.itens.length > 0) {
+    dadosNota.itens.forEach(item => {
+      const nomePadronizado = (item.nome_padronizado || item.nome_original || "").trim();
+      if (!nomePadronizado) return;
+
+      const chaveSegura = sanitizarChaveFirebase(nomePadronizado.toLowerCase());
+      const urlItemEstoque = `${dbUrl}/estoque/${chaveSegura}.json${authQuery}`;
+
+      let qtdAtual = 0;
+      try {
+        const res = UrlFetchApp.fetch(urlItemEstoque, { muteHttpExceptions: true });
+        const itemExistente = JSON.parse(res.getContentText());
+        if (itemExistente && itemExistente.quantidade_total) {
+          qtdAtual = Number(itemExistente.quantidade_total) || 0;
+        }
+      } catch (e) {
+        // Primeiro cadastro do item
+      }
+
+      const payloadEstoque = {
+        nome: nomePadronizado,
+        categoria: item.categoria || "Geral",
+        quantidade_total: qtdAtual + (Number(item.quantidade) || 1),
+        unidade: item.unidade || "un",
+        ultima_compra: dadosNota.data_compra || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd"),
+        ultimo_preco_unitario: item.preco_unitario || 0,
+        atualizado_em: dataHoje
+      };
+
+      try {
+        UrlFetchApp.fetch(urlItemEstoque, {
+          method: "put",
+          contentType: "application/json",
+          payload: JSON.stringify(payloadEstoque),
+          muteHttpExceptions: true
+        });
+      } catch (errItem) {
+        Logger.log(`Erro ao atualizar item ${nomePadronizado} no Firebase: ` + errItem.message);
+      }
+    });
+  }
+
+  Logger.log("Transação e estoque registrados com sucesso no Firebase!");
+}
+
+/**
+ * Normaliza strings para chaves válidas do Firebase (proíbe . $ # [ ] / e acentos).
+ */
+function sanitizarChaveFirebase(chave) {
+  return chave
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.#$\[\]\/]/g, "_")
+    .replace(/\s+/g, "_");
+}
+

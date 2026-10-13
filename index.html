@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard Despensa & Compras</title>
+  <!-- Chart.js para gráficos -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Fonte Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+    body { background-color: #f4f6f9; color: #1e293b; padding: 24px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    h1 { font-size: 24px; font-weight: 700; color: #0f172a; }
+    .btn-refresh { background: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    .btn-refresh:hover { background: #1d4ed8; }
+
+    /* KPIs */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .kpi-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .kpi-title { font-size: 13px; font-weight: 500; color: #64748b; text-transform: uppercase; margin-bottom: 8px; }
+    .kpi-value { font-size: 26px; font-weight: 700; color: #0f172a; }
+
+    /* Grid de Gráficos */
+    .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 24px; }
+    .chart-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .chart-card h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #334155; }
+    .chart-container { position: relative; height: 260px; width: 100%; }
+
+    /* Tabela */
+    .table-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+    .table-header h2 { font-size: 16px; font-weight: 600; color: #334155; }
+    .search-box { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; width: 240px; font-size: 14px; }
+    
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; }
+    th { background: #f8fafc; padding: 12px; border-bottom: 2px solid #e2e8f0; color: #475569; font-weight: 600; }
+    td { padding: 12px; border-bottom: 1px solid #f1f5f9; color: #334155; }
+    tr:hover { background-color: #f8fafc; }
+    
+    .loading { text-align: center; padding: 40px; font-size: 16px; color: #64748b; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div>
+      <h1>📊 Gestão Doméstica & Compras</h1>
+      <p style="color: #64748b; font-size: 14px;">Dados sincronizados em tempo real do Firebase</p>
+    </div>
+    <button class="btn-refresh" onclick="carregarDados()">🔄 Atualizar</button>
+  </header>
+
+  <div id="loading" class="loading">Carregando dados do Firebase...</div>
+
+  <div id="content" style="display: none;">
+    <!-- KPIs -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-title">Total Gasto Acumulado</div>
+        <div class="kpi-value" id="kpi-total">R$ 0,00</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Notas Fiscais Lidas</div>
+        <div class="kpi-value" id="kpi-notas">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Ticket Médio por Compra</div>
+        <div class="kpi-value" id="kpi-ticket">R$ 0,00</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Itens Únicos no Estoque</div>
+        <div class="kpi-value" id="kpi-itens">0</div>
+      </div>
+    </div>
+
+    <!-- Gráficos -->
+    <div class="charts-grid">
+      <div class="chart-card">
+        <h2>Gastos por Categoria</h2>
+        <div class="chart-container">
+          <canvas id="chartCategorias"></canvas>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h2>Gastos por Supermercado</h2>
+        <div class="chart-container">
+          <canvas id="chartMercados"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabela de Estoque -->
+    <div class="table-card">
+      <div class="table-header">
+        <h2>Estoque Consolidado</h2>
+        <input type="text" id="filtroEstoque" class="search-box" placeholder="Filtrar item ou categoria..." onkeyup="filtrarTabela()">
+      </div>
+      <div style="overflow-x: auto;">
+        <table id="tabelaEstoque">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Categoria</th>
+              <th>Qtd. Total</th>
+              <th>Última Compra</th>
+              <th>Último Preço Unit.</th>
+            </tr>
+          </thead>
+          <tbody id="estoqueBody">
+            <!-- Linhas inseridas via JS -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+
+<script>
+// Lê a variável do config.js (ou faz fallback para um valor padrão)
+  const FIREBASE_URL = (typeof CONFIG !== 'undefined' && CONFIG.FIREBASE_URL) 
+    ? CONFIG.FIREBASE_URL 
+    : "https://SEU_PROJETO-default-rtdb.firebaseio.com";
+
+  let graficoCategorias = null;
+  let graficoMercados = null;
+  let dadosEstoqueGlobal = [];
+
+  async function carregarDados() {
+    if (FIREBASE_URL.includes("SEU_PROJETO")) {
+      document.getElementById('loading').innerHTML = `⚠️ Configure a URL do Firebase no arquivo <code>config.js</code>.`;
+      return;
+    }
+
+    try {
+      // 1. Fetch simultâneo de compras e estoque
+      const [resCompras, resEstoque] = await Promise.all([
+        fetch(`${FIREBASE_URL}/compras.json`),
+        fetch(`${FIREBASE_URL}/estoque.json`)
+      ]);
+
+      const comprasData = await resCompras.json() || {};
+      const estoqueData = await resEstoque.json() || {};
+
+      processarPainel(comprasData, estoqueData);
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
+    } catch (err) {
+      document.getElementById('loading').innerHTML = `❌ Erro ao conectar ao Firebase: ${err.message}`;
+    }
+  }
+
+  function processarPainel(compras, estoque) {
+    let totalGasto = 0;
+    let totalNotas = 0;
+    const gastosPorCategoria = {};
+    const gastosPorMercado = {};
+
+    // Processa Compras
+    Object.values(compras).forEach(compra => {
+      totalNotas++;
+      const mercado = compra.estabelecimento || "Supermercado";
+      let totalNota = 0;
+
+      if (compra.itens && Array.isArray(compra.itens)) {
+        compra.itens.forEach(item => {
+          const valor = Number(item.preco_total) || 0;
+          const cat = item.categoria || "Geral";
+          totalNota += valor;
+          gastosPorCategoria[cat] = (gastosPorCategoria[cat] || 0) + valor;
+        });
+      }
+
+      totalGasto += totalNota;
+      gastosPorMercado[mercado] = (gastosPorMercado[mercado] || 0) + totalNota;
+    });
+
+    const ticketMedio = totalNotas > 0 ? (totalGasto / totalNotas) : 0;
+
+    // Atualiza KPIs
+    document.getElementById('kpi-total').innerText = totalGasto.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    document.getElementById('kpi-notas').innerText = totalNotas;
+    document.getElementById('kpi-ticket').innerText = ticketMedio.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    
+    // Processa Estoque
+    dadosEstoqueGlobal = Object.values(estoque);
+    document.getElementById('kpi-itens').innerText = dadosEstoqueGlobal.length;
+    renderizarTabela(dadosEstoqueGlobal);
+
+    // Renderiza Gráficos
+    renderizarGraficos(gastosPorCategoria, gastosPorMercado);
+  }
+
+  function renderizarGraficos(categorias, mercados) {
+    // 1. Gráfico de Rosca: Categorias
+    const ctxCat = document.getElementById('chartCategorias').getContext('2d');
+    if (graficoCategorias) graficoCategorias.destroy();
+    
+    graficoCategorias = new Chart(ctxCat, {
+      type: 'doughnut',
+      data: {
+        labels: Object.keys(categorias),
+        datasets: [{
+          data: Object.values(categorias),
+          backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#64748b']
+        }]
+      },
+      options: { responsive: true, maintainAspectRatio: false }
+    });
+
+    // 2. Gráfico de Barras: Mercados
+    const ctxMerc = document.getElementById('chartMercados').getContext('2d');
+    if (graficoMercados) graficoMercados.destroy();
+
+    graficoMercados = new Chart(ctxMerc, {
+      type: 'bar',
+      data: {
+        labels: Object.keys(mercados),
+        datasets: [{
+          label: 'Total Gasto (R$)',
+          data: Object.values(mercados),
+          backgroundColor: '#2563eb'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true } }
+      }
+    });
+  }
+
+  function renderizarTabela(itens) {
+    const tbody = document.getElementById('estoqueBody');
+    tbody.innerHTML = '';
+
+    itens.forEach(it => {
+      const tr = document.createElement('tr');
+      const preco = it.ultimo_preco_unitario 
+        ? Number(it.ultimo_preco_unitario).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+        : '-';
+
+      tr.innerHTML = `
+        <td style="font-weight: 500;">${it.nome || '-'}</td>
+        <td><span style="background: #e2e8f0; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${it.categoria || 'Geral'}</span></td>
+        <td>${it.quantidade_total || 0} ${it.unidade || 'un'}</td>
+        <td>${it.ultima_compra || '-'}</td>
+        <td>${preco}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function filtrarTabela() {
+    const termo = document.getElementById('filtroEstoque').value.toLowerCase();
+    const filtrados = dadosEstoqueGlobal.filter(it => 
+      (it.nome && it.nome.toLowerCase().includes(termo)) ||
+      (it.categoria && it.categoria.toLowerCase().includes(termo))
+    );
+    renderizarTabela(filtrados);
+  }
+
+  // Executa na carga da página
+  window.onload = carregarDados;
+</script>
+
+</body>
+</html>
