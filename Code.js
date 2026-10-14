@@ -1,5 +1,12 @@
 /**
- * Webhook do Telegram adaptado: direto ao ponto e sem complexidade.
+ * Trata requisições diretas no navegador (GET).
+ */
+function doGet(e) {
+  return ContentService.createTextOutput("✅ Webhook ativo e operacional!");
+}
+
+/**
+ * Webhook do Telegram (POST).
  */
 function doPost(e) {
   const props = PropertiesService.getScriptProperties();
@@ -8,17 +15,23 @@ function doPost(e) {
   const folderEntradaId = (props.getProperty("FOLDER_ENTRADA_ID") || "").trim();
   const folderProcessadasId = (props.getProperty("FOLDER_PROCESSADAS_ID") || "").trim();
 
+  let chatId = null;
+
   try {
-    if (!e || !e.postData || !e.postData.contents) return HtmlService.createHtmlOutput();
+    if (!e || !e.postData || !e.postData.contents) {
+      return HtmlService.createHtmlOutput();
+    }
 
     const contents = JSON.parse(e.postData.contents);
-    if (!contents.message) return HtmlService.createHtmlOutput();
+    if (!contents.message) {
+      return HtmlService.createHtmlOutput();
+    }
 
-    const chatId = contents.message.chat.id;
+    chatId = contents.message.chat.id;
     const texto = (contents.message.text || "").trim().toLowerCase();
     const photoArray = contents.message.photo;
 
-    // 1. Comando simples de consulta
+    // 1. Comandos de texto
     if (texto === "/estoque" || texto === "/compras") {
       const respostaEstoque = consultarEstoqueTelegram();
       enviarMensagemTelegram(chatId, respostaEstoque, telegramToken);
@@ -26,26 +39,31 @@ function doPost(e) {
     }
 
     if (texto === "/start" || texto === "/ajuda") {
-      enviarMensagemTelegram(chatId, "Mande uma foto de nota fiscal para cadastrar ou digite /estoque para ver os itens.", telegramToken);
+      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal para cadastrar ou digite /estoque para ver os itens.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // Se não for foto
+    // Validação de recebimento de imagem
     if (!photoArray || photoArray.length === 0) {
       enviarMensagemTelegram(chatId, "Envie uma foto da nota fiscal ou digite /estoque.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    enviarMensagemTelegram(chatId, "Lendo nota fiscal...", telegramToken);
+    enviarMensagemTelegram(chatId, "⏳ A descarregar imagem do Telegram...", telegramToken);
 
-    // 2. Baixa a foto do Telegram
-    const fileId = photoArray[photoArray.length - 1].file_id;
-    const getFileUrl = `https://api.telegram.org/bot${telegramToken}/getFile?file_id=${fileId}`;
+    if (!folderEntradaId) {
+      enviarMensagemTelegram(chatId, "❌ Erro: FOLDER_ENTRADA_ID não configurado.", telegramToken);
+      return HtmlService.createHtmlOutput();
+    }
+
+    // 2. Descarregar fotografia em maior resolução
+    const foto = photoArray[photoArray.length - 1];
+    const getFileUrl = `https://api.telegram.org/bot${telegramToken}/getFile?file_id=${foto.file_id}`;
     const fileRes = UrlFetchApp.fetch(getFileUrl, { muteHttpExceptions: true });
     const fileJson = JSON.parse(fileRes.getContentText());
 
-    if (!fileJson.ok || !fileJson.result.file_path) {
-      enviarMensagemTelegram(chatId, "Erro ao baixar a imagem do Telegram.", telegramToken);
+    if (!fileJson.ok || !fileJson.result || !fileJson.result.file_path) {
+      enviarMensagemTelegram(chatId, "❌ Erro ao obter caminho do ficheiro no Telegram.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
@@ -56,54 +74,65 @@ function doPost(e) {
     const nomeArquivo = `Telegram_${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss")}.jpg`;
     blob.setName(nomeArquivo);
 
-    // Salva na entrada e converte
+    // Gravar na pasta de entrada do Drive
     const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
     const driveFile = pastaEntrada.createFile(blob);
+
+    enviarMensagemTelegram(chatId, "📸 Ficheiro guardado! A analisar com Gemini...", telegramToken);
 
     const imageBytes = driveFile.getBlob().getBytes();
     const imageBase64 = Utilities.base64Encode(imageBytes);
     const mimeType = driveFile.getMimeType() || "image/jpeg";
 
-    // 3. Processa no Gemini com as regras existentes (deduplicação e padronização)
+    // 3. Processamento no Gemini
     const dadosNota = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
 
     if (!dadosNota || !dadosNota.itens || dadosNota.itens.length === 0) {
-      enviarMensagemTelegram(chatId, "Não consegui identificar itens nesta foto.", telegramToken);
+      enviarMensagemTelegram(chatId, "⚠️ Não consegui identificar itens nesta fatura.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // Se já foi cadastrada, avisa e não duplica
-    const identificador = (dadosNota.identificador_nota || "").trim();
+    // Higienização da chave / identificador
+    let identificador = "";
+    if (dadosNota.identificador_nota) {
+      identificador = String(dadosNota.identificador_nota).replace(/\D/g, "").trim();
+      dadosNota.identificador_nota = identificador;
+    }
+
+    // Verificação de duplicados
     if (identificador && notaJaCadastrada(identificador)) {
       if (folderProcessadasId) driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
       enviarMensagemTelegram(chatId, `⚠️ Esta nota (${identificador}) já tinha sido cadastrada!`, telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // 4. Grava no seu histórico e no seu estoque consolidado
+    // 4. Gravação na Folha de Cálculo e no Firebase
     gravarNaPlanilha(dadosNota, nomeArquivo);
     salvarNoFirebase(dadosNota, nomeArquivo);
 
-    // Move para processadas
+    // Mover para a pasta de processadas
     if (folderProcessadasId) {
       driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
     }
 
-    // 5. Retorno curto e limpo no Telegram
+    // 5. Confirmação no Telegram
     const total = dadosNota.itens.reduce((acc, it) => acc + (Number(it.preco_total) || 0), 0);
-    const mercado = dadosNota.estabelecimento || "Mercado";
+    const mercado = dadosNota.estabelecimento || "Supermercado";
     const qtd = dadosNota.itens.length;
-    enviarMensagemTelegram(chatId, `✅ Salvo!\n🏪 ${mercado}\n📦 ${qtd} itens cadastrados\n💰 Total: R$ ${total.toFixed(2).replace('.', ',')}`, telegramToken);
+    enviarMensagemTelegram(chatId, `✅ Salvo!\n🏪 ${mercado}\n📦 ${qtd} itens registados\n💰 Total: R$ ${total.toFixed(2).replace('.', ',')}`, telegramToken);
 
   } catch (err) {
     Logger.log("Erro no doPost: " + err.toString());
+    if (chatId && telegramToken) {
+      enviarMensagemTelegram(chatId, `❌ Erro na execução: ${err.message}`, telegramToken);
+    }
   }
 
   return HtmlService.createHtmlOutput();
 }
 
 /**
- * Consulta simples: lê a aba Estoque_Atual existente e lista os itens e quantidades.
+ * Consulta simples do stock consolidado.
  */
 function consultarEstoqueTelegram() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -113,7 +142,6 @@ function consultarEstoqueTelegram() {
     return "Nenhum item encontrado no estoque.";
   }
 
-  // Pega os itens da aba Estoque_Atual (Item na Coluna A, Qtd na Coluna C)
   const dados = abaEstoque.getDataRange().getValues();
   let resposta = "📦 *Itens no Estoque:*\n\n";
 
@@ -129,60 +157,7 @@ function consultarEstoqueTelegram() {
 }
 
 /**
- * Consulta a aba Estoque_Atual e formata um resumo para o Telegram.
- */
-function gerarRelatorioEstoqueTelegram() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const abaEstoque = ss.getSheetByName("Estoque_Atual");
-
-  if (!abaEstoque) return "Aba de estoque não configurada.";
-
-  const dados = abaEstoque.getDataRange().getValues();
-  if (dados.length <= 1) return "O estoque ainda está vazio. Envie fotos de notas para preenchê-lo.";
-
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
-
-  const urgentes = [];
-  const reporLogo = [];
-  let totalItens = 0;
-
-  for (let r = 1; r < dados.length; r++) {
-    const nome = dados[r][0];
-    const dataPrevisao = dados[r][5];
-
-    if (!nome || !(dataPrevisao instanceof Date)) continue;
-    totalItens++;
-
-    const diffDias = Math.ceil((dataPrevisao.getTime() - hoje.getTime()) / 86400000);
-
-    if (diffDias <= 0) {
-      urgentes.push(`🔴 *${nome}* (Esgotado há ${Math.abs(diffDias)}d)`);
-    } else if (diffDias <= 3) {
-      reporLogo.push(`🟡 *${nome}* (Acaba em ${diffDias}d)`);
-    }
-  }
-
-  let resposta = `📋 *Status do Estoque Doméstico*\n\n`;
-
-  if (urgentes.length === 0 && reporLogo.length === 0) {
-    return resposta + `🟢 Tudo em dia! Nenhum dos ${totalItens} itens precisa de reposição no momento.`;
-  }
-
-  if (urgentes.length > 0) {
-    resposta += `*Esgotados:*\n` + urgentes.join("\n") + `\n\n`;
-  }
-
-  if (reporLogo.length > 0) {
-    resposta += `*Previsão de término em breve:*\n` + reporLogo.join("\n") + `\n\n`;
-  }
-
-  resposta += `_Total de produtos monitorados: ${totalItens}_`;
-  return resposta;
-}
-
-/**
- * Verifica se a nota já foi registrada na aba Historico_Compras pelo identificador.
+ * Verificação de duplicados na aba Historico_Compras.
  */
 function notaJaCadastrada(identificador) {
   if (!identificador) return false;
@@ -193,7 +168,6 @@ function notaJaCadastrada(identificador) {
 
   const dados = abaHistorico.getDataRange().getValues();
   for (let i = 1; i < dados.length; i++) {
-    // Coluna J (índice 9) armazena o Identificador_Nota
     if (dados[i][9] && String(dados[i][9]).trim() === identificador) {
       return true;
     }
@@ -202,7 +176,7 @@ function notaJaCadastrada(identificador) {
 }
 
 /**
- * Gemini OCR: extrai dados e normaliza nomes com JSON Schema estrito.
+ * Chamada à API Gemini com Structured Outputs.
  */
 function extrairDadosViaGemini(base64Image, mimeType, apiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
@@ -211,10 +185,15 @@ function extrairDadosViaGemini(base64Image, mimeType, apiKey) {
 Você é um especialista em OCR e normalização de cupons fiscais brasileiros.
 Analise a nota fiscal e extraia os dados reais.
 
+ATENÇÃO CRÍTICA PARA 'identificador_nota':
+- PRIORIDADE MÁXIMA: Procure a "Chave de Acesso" de 44 dígitos (localizada no rodapé ou próxima ao QR Code, ex: "2326 0606 8876 6800 2718 6510 2000 0437 8617 3057 3679").
+- EXTRAIA OS 44 DÍGITOS NUMÉRICOS CONTÍNUOS, SEM ESPAÇOS.
+- APENAS se a nota estiver cortada ou ilegível no rodapé, utilize o número do CONTROLE / COO / Extrato.
+
 Campos obrigatórios:
 1. data_compra: Data no formato YYYY-MM-DD.
 2. estabelecimento: Nome ou razão social.
-3. identificador_nota: O número do CONTROLE (ex: "046617"), COO, número do Extrato NFC-e ou os 44 dígitos da chave de acesso. NUNCA deixe vazio se houver controle/chave impresso.
+3. identificador_nota: A Chave de Acesso de 44 dígitos contínuos (ou controle se ausente).
 4. itens:
    - nome_original: Descrição exatamente como impressa.
    - nome_padronizado: Nome decifrado e legível em português.
@@ -230,7 +209,10 @@ Campos obrigatórios:
     properties: {
       data_compra: { type: "STRING", description: "YYYY-MM-DD" },
       estabelecimento: { type: "STRING" },
-      identificador_nota: { type: "STRING", description: "Número de controle, extrato ou chave de 44 dígitos" },
+      identificador_nota: { 
+        type: "STRING", 
+        description: "Chave de Acesso de 44 dígitos contínuos (sem espaços). Se ausente, número de controle." 
+      },
       itens: {
         type: "ARRAY",
         items: {
@@ -248,7 +230,7 @@ Campos obrigatórios:
         }
       }
     },
-    required: ["data_compra", "estabelecimento", "itens"]
+    required: ["data_compra", "estabelecimento", "identificador_nota", "itens"]
   };
 
   const payload = {
@@ -298,7 +280,7 @@ Campos obrigatórios:
 }
 
 /**
- * Grava na planilha (incluindo o Identificador_Nota para controle de duplicidade).
+ * Registo na aba Historico_Compras.
  */
 function gravarNaPlanilha(dadosNota, nomeArquivo) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -344,7 +326,7 @@ function gravarNaPlanilha(dadosNota, nomeArquivo) {
 }
 
 /**
- * Atualiza o estoque considerando giro diferenciado para perecíveis vs não-perecíveis.
+ * Atualização da aba Estoque_Atual.
  */
 function atualizarOuInserirEstoque(ss, dadosNota) {
   let abaEstoque = ss.getSheetByName("Estoque_Atual");
@@ -358,7 +340,7 @@ function atualizarOuInserirEstoque(ss, dadosNota) {
       "Ultima_Compra",
       "Consumo_Medio_Dias",
       "Previsao_Acabar",
-      "Tipo_Validade" // Perecível ou Despensa Geral
+      "Tipo_Validade"
     ]);
   }
 
@@ -390,7 +372,6 @@ function atualizarOuInserirEstoque(ss, dadosNota) {
     const qtdComprada = Number(item.quantidade) || 1;
     const cat = item.categoria || "Geral";
 
-    // Heurística de giro inicial: perecíveis têm ciclos curtos
     const ehPerecivel = /(carnes|aves|latic[íi]nios|frios|hortifr[úu]ti|padaria)/i.test(cat);
     const giroPadraoDias = ehPerecivel ? 7 : 30;
     const tipoValidade = ehPerecivel ? "Perecível" : "Despensa";
@@ -440,186 +421,7 @@ function atualizarOuInserirEstoque(ss, dadosNota) {
 }
 
 /**
- * Disparo matinal: e-mail dividido em 'Atenção ao Vencimento' e 'Lista de Reposição'.
- */
-function verificarEstoqueENotificar() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const abaEstoque = ss.getSheetByName("Estoque_Atual");
-  if (!abaEstoque) return;
-
-  const dados = abaEstoque.getDataRange().getValues();
-  if (dados.length <= 1) return;
-
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
-
-  const pereciveisAlerta = [];
-  const despensaAlerta = [];
-
-  for (let i = 1; i < dados.length; i++) {
-    const nome = dados[i][0];
-    const dataPrevisao = dados[i][5];
-    const tipo = dados[i][6] || "Despensa";
-
-    if (!nome || !(dataPrevisao instanceof Date)) continue;
-
-    const diffDias = Math.ceil((dataPrevisao.getTime() - hoje.getTime()) / 86400000);
-
-    if (diffDias <= 2) {
-      const obj = {
-        item: nome,
-        dias: diffDias,
-        dataPrevisao: Utilities.formatDate(dataPrevisao, Session.getScriptTimeZone(), "dd/MM/yyyy")
-      };
-
-      if (tipo === "Perecível") {
-        pereciveisAlerta.push(obj);
-      } else {
-        despensaAlerta.push(obj);
-      }
-    }
-  }
-
-  if (pereciveisAlerta.length > 0 || despensaAlerta.length > 0) {
-    enviarEmailDividido(pereciveisAlerta, despensaAlerta);
-  }
-}
-
-/**
- * Monta e envia o e-mail em dois blocos.
- */
-function enviarEmailDividido(pereciveis, despensa) {
-  const destinatario = Session.getActiveUser().getEmail();
-  const assunto = `🛒 [Alerta Despensa] ${pereciveis.length + despensa.length} itens demandam atenção hoje`;
-
-  let html = `
-    <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #222; max-width: 600px;">
-      <h2 style="color: #1a73e8; margin-bottom: 5px;">Relatório de Estoque e Consumo</h2>
-      <p style="color: #666; font-size: 14px;">Atualizado automaticamente com base nas notas fiscais.</p>
-  `;
-
-  // BLOCO 1: PERECÍVEIS
-  if (pereciveis.length > 0) {
-    html += `
-      <div style="background: #fff3f0; border-left: 4px solid #d93025; padding: 12px; margin-top: 15px;">
-        <h3 style="color: #d93025; margin: 0 0 8px 0;">🥩 Perecíveis / Consumo Imediato</h3>
-        <p style="font-size: 13px; margin: 0 0 10px 0;">Itens abertos ou refrigerados próximos do limite de conservação:</p>
-        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-    `;
-    pereciveis.forEach(p => {
-      const tag = p.dias <= 0 ? `<b style="color:red;">Consumir Já!</b>` : `Resta ${p.dias} dia(s)`;
-      html += `<tr><td style="padding: 4px 0;">• <b>${p.item}</b></td><td style="text-align: right;">${tag}</td></tr>`;
-    });
-    html += `</table></div>`;
-  }
-
-  // BLOCO 2: DESPENSA
-  if (despensa.length > 0) {
-    html += `
-      <div style="background: #f1f8e9; border-left: 4px solid #388e3c; padding: 12px; margin-top: 15px;">
-        <h3 style="color: #2e7d32; margin: 0 0 8px 0;">📦 Lista de Compras (Despensa)</h3>
-        <p style="font-size: 13px; margin: 0 0 10px 0;">Itens secos e utilidades cujo ciclo estimado terminou:</p>
-        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-    `;
-    despensa.forEach(d => {
-      const tag = d.dias <= 0 ? `<b style="color:#d93025;">Esgotado</b>` : `Acaba em ${d.dias} dia(s)`;
-      html += `<tr><td style="padding: 4px 0;">• <b>${d.item}</b></td><td style="text-align: right;">${tag}</td></tr>`;
-    });
-    html += `</table></div>`;
-  }
-
-  html += `
-      <p style="margin-top: 25px; font-size: 12px; color: #888;">Consulte a planilha ou use o comando /estoque no Telegram.</p>
-    </div>
-  `;
-
-  MailApp.sendEmail({
-    to: destinatario,
-    subject: assunto,
-    htmlBody: html
-  });
-}
-
-function enviarMensagemTelegram(chatId, texto, token) {
-  UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify({ chat_id: chatId, text: texto, parse_mode: "Markdown" }),
-    muteHttpExceptions: true
-  });
-}
-
-/**
- * Processa notas fiscais colocadas diretamente na pasta de entrada do Google Drive.
- * Mantém paridade com o Telegram: deduplica, normaliza nomes e move para 'Processadas'.
- */
-function processarNotasFiscais() {
-  const props = PropertiesService.getScriptProperties();
-  const apiKey = (props.getProperty("GEMINI_API_KEY") || "").replace(/["'\s]/g, "");
-  const folderEntradaId = (props.getProperty("FOLDER_ENTRADA_ID") || "").trim();
-  const folderProcessadasId = (props.getProperty("FOLDER_PROCESSADAS_ID") || "").trim();
-
-  if (!apiKey || !folderEntradaId || !folderProcessadasId) {
-    throw new Error("Configure GEMINI_API_KEY, FOLDER_ENTRADA_ID e FOLDER_PROCESSADAS_ID nas Propriedades do Script.");
-  }
-
-  const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
-  const pastaProcessadas = DriveApp.getFolderById(folderProcessadasId);
-  const arquivos = pastaEntrada.getFiles();
-
-  const mimeTypesValidos = ["image/jpeg", "image/png", "image/webp", "image/heic"];
-  let processados = 0;
-
-  while (arquivos.hasNext()) {
-    const arquivo = arquivos.next();
-    const mimeType = arquivo.getMimeType();
-
-    if (!mimeTypesValidos.includes(mimeType)) {
-      Logger.log(`Ficheiro ignorado (formato incompatível): ${arquivo.getName()}`);
-      continue;
-    }
-
-    Logger.log(`A processar do Drive: ${arquivo.getName()}...`);
-
-    try {
-      const imageBytes = arquivo.getBlob().getBytes();
-      const imageBase64 = Utilities.base64Encode(imageBytes);
-
-      // 1. Extração estruturada via Gemini
-      const dadosNota = extrairDadosViaGemini(imageBase64, mimeType, apiKey);
-
-      if (!dadosNota || !dadosNota.itens || dadosNota.itens.length === 0) {
-        Logger.log(`Nenhum item detetado em: ${arquivo.getName()}`);
-        continue;
-      }
-
-      // 2. Validação de duplicidade por chave/controlo
-      const identificador = (dadosNota.identificador_nota || "").trim();
-      if (identificador && notaJaCadastrada(identificador)) {
-        Logger.log(`Aviso: Cupom ${identificador} já existe na planilha. A mover sem duplicar...`);
-        arquivo.moveTo(pastaProcessadas);
-        continue;
-      }
-
-      // 3. Registo nas abas Historico_Compras e Estoque_Atual
-      gravarNaPlanilha(dadosNota, arquivo.getName());
-      salvarNoFirebase(dadosNota, arquivo.getName());
-      Logger.log(`Gravados ${dadosNota.itens.length} itens do ficheiro ${arquivo.getName()}.`);
-
-      // 4. Arquivo na pasta de processadas
-      arquivo.moveTo(pastaProcessadas);
-      processados++;
-
-    } catch (err) {
-      Logger.log(`Erro ao processar ${arquivo.getName()}: ${err.message}`);
-    }
-  }
-
-  Logger.log(`Concluído. Total de notas do Drive processadas: ${processados}`);
-}
-
-/**
- * Salva a transação bruta e atualiza o inventário no Firebase Realtime Database.
+ * Salva no Firebase Realtime Database.
  */
 function salvarNoFirebase(dadosNota, nomeArquivo) {
   const props = PropertiesService.getScriptProperties();
@@ -627,14 +429,13 @@ function salvarNoFirebase(dadosNota, nomeArquivo) {
   const dbSecret = (props.getProperty("FIREBASE_SECRET") || "").trim();
 
   if (!dbUrl || !dbSecret) {
-    Logger.log("Aviso: Configurações do Firebase ausentes. Pulando gravação no banco.");
+    Logger.log("Aviso: Configurações do Firebase ausentes. A saltar gravação.");
     return;
   }
 
   const authQuery = `?auth=${dbSecret}`;
   const dataHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
 
-  // 1. Grava a compra completa no nó /compras
   const payloadCompra = {
     estabelecimento: dadosNota.estabelecimento || "Supermercado",
     data_compra: dadosNota.data_compra || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd"),
@@ -656,7 +457,6 @@ function salvarNoFirebase(dadosNota, nomeArquivo) {
     Logger.log("Erro ao salvar compra no Firebase: " + err.message);
   }
 
-  // 2. Atualiza o saldo do inventário no nó /estoque (Upsert por chave padronizada)
   if (dadosNota.itens && dadosNota.itens.length > 0) {
     dadosNota.itens.forEach(item => {
       const nomePadronizado = (item.nome_padronizado || item.nome_original || "").trim();
@@ -673,7 +473,7 @@ function salvarNoFirebase(dadosNota, nomeArquivo) {
           qtdAtual = Number(itemExistente.quantidade_total) || 0;
         }
       } catch (e) {
-        // Primeiro cadastro do item
+        // Primeiro registo do item
       }
 
       const payloadEstoque = {
@@ -698,12 +498,10 @@ function salvarNoFirebase(dadosNota, nomeArquivo) {
       }
     });
   }
-
-  Logger.log("Transação e estoque registrados com sucesso no Firebase!");
 }
 
 /**
- * Normaliza strings para chaves válidas do Firebase (proíbe . $ # [ ] / e acentos).
+ * Normaliza chaves para o Firebase.
  */
 function sanitizarChaveFirebase(chave) {
   return chave
@@ -712,3 +510,48 @@ function sanitizarChaveFirebase(chave) {
     .replace(/\s+/g, "_");
 }
 
+/**
+ * Envia mensagens formatadas no Telegram.
+ */
+function enviarMensagemTelegram(chatId, texto, token) {
+  UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify({ chat_id: chatId, text: texto, parse_mode: "Markdown" }),
+    muteHttpExceptions: true
+  });
+}
+
+
+/**
+ * Roda o teste com a imagem que acabou de ser salva no Drive e imprime o erro real no console.
+ */
+function testarChamadaGemini() {
+  const props = PropertiesService.getScriptProperties();
+  const geminiKey = (props.getProperty("GEMINI_API_KEY") || "").replace(/["'\s]/g, "");
+  const folderEntradaId = (props.getProperty("FOLDER_ENTRADA_ID") || "").trim();
+
+  const pasta = DriveApp.getFolderById(folderEntradaId);
+  const arquivos = pasta.getFiles();
+
+  if (!arquivos.hasNext()) {
+    Logger.log("Nenhum arquivo na pasta de entrada.");
+    return;
+  }
+
+  const arquivo = arquivos.next();
+  Logger.log("Testando com o arquivo: " + arquivo.getName());
+
+  const imageBytes = arquivo.getBlob().getBytes();
+  const imageBase64 = Utilities.base64Encode(imageBytes);
+  const mimeType = arquivo.getMimeType() || "image/jpeg";
+
+  try {
+    const dados = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
+    Logger.log("SUCESSO! Dados retornados:");
+    Logger.log(JSON.stringify(dados, null, 2));
+  } catch (e) {
+    Logger.log("ERRO DETALHADO DO GEMINI:");
+    Logger.log(e.toString());
+  }
+}
