@@ -1,277 +1,286 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dashboard Despensa & Compras</title>
-  <!-- Chart.js para gráficos -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- Fonte Inter -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
-    body { background-color: #f4f6f9; color: #1e293b; padding: 24px; }
-    .container { max-width: 1200px; margin: 0 auto; }
-    
-    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-    h1 { font-size: 24px; font-weight: 700; color: #0f172a; }
-    .btn-refresh { background: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
-    .btn-refresh:hover { background: #1d4ed8; }
-
-    /* KPIs */
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .kpi-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-    .kpi-title { font-size: 13px; font-weight: 500; color: #64748b; text-transform: uppercase; margin-bottom: 8px; }
-    .kpi-value { font-size: 26px; font-weight: 700; color: #0f172a; }
-
-    /* Grid de Gráficos */
-    .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 24px; }
-    .chart-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-    .chart-card h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #334155; }
-    .chart-container { position: relative; height: 260px; width: 100%; }
-
-    /* Tabela */
-    .table-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-    .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
-    .table-header h2 { font-size: 16px; font-weight: 600; color: #334155; }
-    .search-box { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; width: 240px; font-size: 14px; }
-    
-    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; }
-    th { background: #f8fafc; padding: 12px; border-bottom: 2px solid #e2e8f0; color: #475569; font-weight: 600; }
-    td { padding: 12px; border-bottom: 1px solid #f1f5f9; color: #334155; }
-    tr:hover { background-color: #f8fafc; }
-    
-    .loading { text-align: center; padding: 40px; font-size: 16px; color: #64748b; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Despensa & Compras</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f6f7f6;--card:#fff;--ink:#14272e;--mut:#6b7a80;--line:#e8ecec;--teal:#0f5c6e;--em:#10a37f;--amb:#e8a13a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+.wrap{max-width:1200px;margin:0 auto;padding:0 24px 56px}
+.bar{position:sticky;top:0;z-index:5;background:rgba(246,247,246,.94);backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
+.bar .wrap{padding-bottom:0}
+.top{display:flex;justify-content:space-between;align-items:flex-end;padding:20px 0 14px;gap:12px;flex-wrap:wrap}
+h1{font-size:22px;font-weight:700;letter-spacing:-.01em}
+.sub{color:var(--mut);margin-top:4px}
+.filters{display:flex;gap:10px;flex-wrap:wrap;padding-bottom:14px;align-items:center}
+.filters label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut)}
+.filters input,.filters select{height:34px;border:1px solid var(--line);background:#fff;border-radius:8px;padding:0 10px;font:inherit;color:var(--ink);min-width:140px}
+.filters input:focus,.filters select:focus,button:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.btn{height:34px;border:1px solid var(--line);background:#fff;border-radius:8px;padding:0 14px;font:inherit;font-weight:500;color:var(--teal);cursor:pointer;align-self:flex-end}
+.btn:hover{background:#eef5f6}
+.warn{background:#fdf3e1;color:#7a5316;border-radius:10px;padding:12px 16px;margin-top:20px;display:none}
+section{margin-top:28px}
+h2{font-size:15px;font-weight:600}
+.card{background:var(--card);border-radius:14px;padding:22px;box-shadow:0 1px 2px rgba(20,39,46,.05)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-top:24px}
+.kpi{display:flex;flex-direction:column;gap:10px}
+.kh{display:flex;justify-content:space-between;align-items:center;color:var(--mut)}
+.kh svg{width:18px;height:18px;stroke:var(--teal);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.kv{font-size:30px;font-weight:700;letter-spacing:-.02em}
+.dl{font-size:12px;color:var(--mut)}.up{color:var(--em);font-weight:600}.dn{color:#b9791a;font-weight:600}
+.ch{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;gap:10px;flex-wrap:wrap}
+.seg{display:flex;background:#eef1f1;border-radius:8px;padding:3px}
+.seg button{border:0;background:none;padding:5px 12px;border-radius:6px;font:inherit;color:var(--mut);cursor:pointer}
+.seg button.on{background:#fff;color:var(--teal);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.box{position:relative;height:300px}
+.grid{display:grid;grid-template-columns:1.4fr 1fr;gap:16px}
+.grid .stack{display:flex;flex-direction:column;gap:16px}
+.hint{color:var(--mut);font-size:12px;margin-top:2px}
+.ins{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.in{display:flex;gap:12px}
+.dot{width:8px;border-radius:4px;flex:none;background:var(--teal)}
+.dot.up{background:var(--em)}.dot.dn{background:var(--amb)}
+.in b{display:block;margin-bottom:3px}.in span{color:var(--mut);line-height:1.45}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-weight:500;color:var(--mut);font-size:12px;padding:0 10px 10px}
+td{padding:11px 10px;border-top:1px solid var(--line)}
+tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
+.r{text-align:right;font-variant-numeric:tabular-nums}
+.tag{background:#eef1f1;border-radius:6px;padding:2px 8px;font-size:12px;color:var(--mut)}
+.scroll{overflow-x:auto}
+@media(max-width:860px){.grid{grid-template-columns:1fr}.wrap{padding:0 16px 40px}}
+</style>
 </head>
 <body>
-
-<div class="container">
-  <header>
-    <div>
-      <h1>📊 Gestão Doméstica & Compras</h1>
-      <p style="color: #64748b; font-size: 14px;">Dados sincronizados em tempo real do Firebase</p>
-    </div>
-    <button class="btn-refresh" onclick="carregarDados()">🔄 Atualizar</button>
-  </header>
-
-  <div id="loading" class="loading">Carregando dados do Firebase...</div>
-
-  <div id="content" style="display: none;">
-    <!-- KPIs -->
-    <div class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-title">Total Gasto Acumulado</div>
-        <div class="kpi-value" id="kpi-total">R$ 0,00</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Notas Fiscais Lidas</div>
-        <div class="kpi-value" id="kpi-notas">0</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Ticket Médio por Compra</div>
-        <div class="kpi-value" id="kpi-ticket">R$ 0,00</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Itens Únicos no Estoque</div>
-        <div class="kpi-value" id="kpi-itens">0</div>
-      </div>
-    </div>
-
-    <!-- Gráficos -->
-    <div class="charts-grid">
-      <div class="chart-card">
-        <h2>Gastos por Categoria</h2>
-        <div class="chart-container">
-          <canvas id="chartCategorias"></canvas>
-        </div>
-      </div>
-      <div class="chart-card">
-        <h2>Gastos por Supermercado</h2>
-        <div class="chart-container">
-          <canvas id="chartMercados"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tabela de Estoque -->
-    <div class="table-card">
-      <div class="table-header">
-        <h2>Estoque Consolidado</h2>
-        <input type="text" id="filtroEstoque" class="search-box" placeholder="Filtrar item ou categoria..." onkeyup="filtrarTabela()">
-      </div>
-      <div style="overflow-x: auto;">
-        <table id="tabelaEstoque">
-          <thead>
-            <tr>
-              <th>Item</th>
-              <th>Categoria</th>
-              <th>Qtd. Total</th>
-              <th>Última Compra</th>
-              <th>Último Preço Unit.</th>
-            </tr>
-          </thead>
-          <tbody id="estoqueBody">
-            <!-- Linhas inseridas via JS -->
-          </tbody>
-        </table>
-      </div>
-    </div>
+<div class="bar"><div class="wrap">
+  <div class="top">
+    <div><h1>Despensa & compras</h1><p class="sub" id="periodo">Carregando…</p></div>
+    <button class="btn" onclick="carregar()">Atualizar dados</button>
   </div>
+  <div class="filters">
+    <label>De<input type="date" id="f-from"></label>
+    <label>Até<input type="date" id="f-to"></label>
+    <label>Categoria<select id="f-cat"></select></label>
+    <label>Supermercado<select id="f-mk"></select></label>
+    <label>Produto<input list="dl-prod" id="f-prod" placeholder="Todos"><datalist id="dl-prod"></datalist></label>
+    <button class="btn" id="limpar">Limpar filtros</button>
+  </div>
+</div></div>
+
+<div class="wrap">
+  <div class="warn" id="warn"></div>
+  <div class="kpis" id="kpis"></div>
+
+  <section>
+    <div class="card">
+      <div class="ch">
+        <div><h2>Gasto ao longo do tempo</h2><p class="hint" id="trend"></p></div>
+        <div class="seg" id="gran">
+          <button data-g="day">Dia</button><button data-g="week">Semana</button><button data-g="month" class="on">Mês</button>
+        </div>
+      </div>
+      <div class="box"><canvas id="cTempo"></canvas></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="grid">
+      <div class="card"><h2>Gasto por produto</h2><p class="hint">Clique numa barra para filtrar</p>
+        <div class="box" style="height:340px;margin-top:12px"><canvas id="cProd"></canvas></div></div>
+      <div class="stack">
+        <div class="card"><h2>Por categoria</h2><div class="box" style="height:130px;margin-top:12px"><canvas id="cCat"></canvas></div></div>
+        <div class="card"><h2>Por supermercado</h2><div class="box" style="height:130px;margin-top:12px"><canvas id="cMk"></canvas></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 style="margin-bottom:14px">Análise</h2>
+    <div class="ins" id="ins"></div>
+    <div class="card" style="margin-top:16px">
+      <div class="ch"><h2>Produtos em detalhe</h2><p class="hint">Top 10 por gasto · clique numa linha para filtrar</p></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Produto</th><th>Categoria</th><th class="r">Gasto</th><th class="r">Vs. anterior</th><th class="r">Última compra</th><th class="r">Em estoque</th></tr></thead>
+        <tbody id="tb"></tbody></table></div>
+    </div>
+  </section>
 </div>
 
 <script src="config.js"></script>
-
 <script>
-// Lê a variável do config.js (ou faz fallback para um valor padrão)
-  const FIREBASE_URL = (typeof CONFIG !== 'undefined' && CONFIG.FIREBASE_URL) 
-    ? CONFIG.FIREBASE_URL 
-    : "https://SEU_PROJETO-default-rtdb.firebaseio.com";
+const FB=(typeof CONFIG!=='undefined'&&CONFIG.FIREBASE_URL)||"";
+// Nomes de campo aceitos para a data da compra (ajuste se o seu for diferente)
+const DATE_KEYS=['data','data_compra','data_emissao','dataEmissao','data_hora','timestamp','criado_em','created_at'];
+const $=id=>document.getElementById(id);
+const brl=v=>v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pick=(o,ks)=>{for(const k of ks)if(o&&o[k]!=null&&o[k]!=='')return o[k]};
+const fd=d=>d.toLocaleDateString('pt-BR');
+let L=[],E=[],charts={},F={},G='month';
 
-  let graficoCategorias = null;
-  let graficoMercados = null;
-  let dadosEstoqueGlobal = [];
-
-  async function carregarDados() {
-    if (FIREBASE_URL.includes("SEU_PROJETO")) {
-      document.getElementById('loading').innerHTML = `⚠️ Configure a URL do Firebase no arquivo <code>config.js</code>.`;
-      return;
-    }
-
-    try {
-      // 1. Fetch simultâneo de compras e estoque
-      const [resCompras, resEstoque] = await Promise.all([
-        fetch(`${FIREBASE_URL}/compras.json`),
-        fetch(`${FIREBASE_URL}/estoque.json`)
-      ]);
-
-      const comprasData = await resCompras.json() || {};
-      const estoqueData = await resEstoque.json() || {};
-
-      processarPainel(comprasData, estoqueData);
-
-      document.getElementById('loading').style.display = 'none';
-      document.getElementById('content').style.display = 'block';
-    } catch (err) {
-      document.getElementById('loading').innerHTML = `❌ Erro ao conectar ao Firebase: ${err.message}`;
-    }
-  }
-
-  function processarPainel(compras, estoque) {
-    let totalGasto = 0;
-    let totalNotas = 0;
-    const gastosPorCategoria = {};
-    const gastosPorMercado = {};
-
-    // Processa Compras
-    Object.values(compras).forEach(compra => {
-      totalNotas++;
-      const mercado = compra.estabelecimento || "Supermercado";
-      let totalNota = 0;
-
-      if (compra.itens && Array.isArray(compra.itens)) {
-        compra.itens.forEach(item => {
-          const valor = Number(item.preco_total) || 0;
-          const cat = item.categoria || "Geral";
-          totalNota += valor;
-          gastosPorCategoria[cat] = (gastosPorCategoria[cat] || 0) + valor;
-        });
-      }
-
-      totalGasto += totalNota;
-      gastosPorMercado[mercado] = (gastosPorMercado[mercado] || 0) + totalNota;
+function parseD(v){
+  if(v==null)return null;
+  if(typeof v==='number')return new Date(v<1e12?v*1000:v);
+  const m=String(v).match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\D+(\d{2}):(\d{2}))?/);
+  if(m)return new Date(+m[3],m[2]-1,+m[1],+(m[4]||0),+(m[5]||0));
+  const d=new Date(v);return isNaN(d)?null:d;
+}
+// Nome do item: tenta campos comuns; se nenhum existir, usa o maior texto do item (exceto categoria, unidade e códigos)
+const NOME_KEYS=['nome','nome_item','nome_produto','produto','descricao','descrição','descricao_item','item','description','name'];
+function nomeItem(i){
+  if(typeof i==='string')return i;
+  const v=pick(i,NOME_KEYS);
+  if(v!=null&&typeof v!=='object')return String(v).trim();
+  const skip=/cat|unid|^un$|cod|ean|^id$|data/i;
+  const t=Object.keys(i).filter(k=>typeof i[k]==='string'&&i[k].trim()&&isNaN(i[k])&&!skip.test(k)).sort((a,b)=>i[b].length-i[a].length)[0];
+  if(!t)console.warn('Item sem campo de nome reconhecido. Campos:',Object.keys(i));
+  return t?i[t].trim():'Item sem nome';
+}
+async function carregar(){
+  if(!FB||FB.includes('SEU_PROJETO')){$('warn').style.display='block';$('warn').textContent='Configure FIREBASE_URL no arquivo config.js.';return}
+  try{
+    const [a,b]=await Promise.all([fetch(FB+'/compras.json'),fetch(FB+'/estoque.json')]);
+    const c=(await a.json())||{};E=Object.values((await b.json())||{});
+    L=[];
+    Object.entries(c).forEach(([id,n])=>{
+      const d=parseD(pick(n,DATE_KEYS)),mk=n.estabelecimento||'Supermercado';
+      const its=Array.isArray(n.itens)?n.itens:Object.values(n.itens||{});
+      its.forEach(i=>L.push({id,d,mk,cat:i.categoria||'Geral',p:nomeItem(i),q:Number(pick(i,['quantidade','qtd','qtde'])||0),v:Number(i.preco_total)||0}));
     });
+    opts();render();
+  }catch(e){$('warn').style.display='block';$('warn').textContent='Erro ao conectar ao Firebase: '+e.message}
+}
+function opts(){
+  const u=k=>[...new Set(L.map(l=>l[k]))].sort();
+  $('f-cat').innerHTML='<option value="">Todas</option>'+u('cat').map(x=>`<option>${esc(x)}</option>`).join('');
+  $('f-mk').innerHTML='<option value="">Todos</option>'+u('mk').map(x=>`<option>${esc(x)}</option>`).join('');
+  $('dl-prod').innerHTML=u('p').map(x=>`<option value="${esc(x)}">`).join('');
+}
+function sync(){$('f-from').value=F.from||'';$('f-to').value=F.to||'';$('f-cat').value=F.cat||'';$('f-mk').value=F.mk||'';$('f-prod').value=F.prod||''}
+[['f-from','from'],['f-to','to'],['f-cat','cat'],['f-mk','mk'],['f-prod','prod']].forEach(([id,k])=>$(id).addEventListener('change',e=>{F[k]=e.target.value;render()}));
+$('limpar').onclick=()=>{F={};sync();render()};
+$('gran').onclick=e=>{const g=e.target.dataset.g;if(!g)return;G=g;[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g===g));render()};
 
-    const ticketMedio = totalNotas > 0 ? (totalGasto / totalNotas) : 0;
+const sum=(a,f='v')=>a.reduce((s,l)=>s+l[f],0);
+function stats(a){
+  const t=sum(a),ids={};a.forEach(l=>{if(l.d)ids[l.id]=+l.d});
+  const n=new Set(a.map(l=>l.id)).size,ds=Object.values(ids).sort((x,y)=>x-y);
+  let iv=null;if(ds.length>1)iv=(ds[ds.length-1]-ds[0])/864e5/(ds.length-1);
+  return{t,n,tk:n?t/n:0,iv};
+}
+const pct=(c,p)=>p?(c-p)/p*100:null;
+function delta(c,p,inv){
+  const x=pct(c,p);if(x===null)return'<span class="dl">sem período anterior</span>';
+  return`<span class="${x>=0?'up':'dn'}">${x>=0?'▲':'▼'} ${Math.abs(x).toFixed(1).replace('.',',')}%</span> <span class="dl">vs. anterior</span>`;
+}
+function key(d,g){
+  const x=new Date(d.getFullYear(),d.getMonth(),d.getDate()),p=n=>String(n).padStart(2,'0');
+  if(g==='week')x.setDate(x.getDate()-((x.getDay()+6)%7));
+  return g==='month'?x.getFullYear()+'-'+p(x.getMonth()+1):x.getFullYear()+'-'+p(x.getMonth()+1)+'-'+p(x.getDate());
+}
+function lab(k,g){const s=k.split('-');return g==='month'?s[1]+'/'+s[0].slice(2):s[2]+'/'+s[1]}
+const IC={
+ t:'<path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+ n:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6"/>',
+ k:'<path d="M6 6h15l-1.5 9h-12zM6 6L5 2H2"/>',
+ i:'<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',
+ s:'<path d="M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8"/>'};
 
-    // Atualiza KPIs
-    document.getElementById('kpi-total').innerText = totalGasto.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    document.getElementById('kpi-notas').innerText = totalNotas;
-    document.getElementById('kpi-ticket').innerText = ticketMedio.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-    
-    // Processa Estoque
-    dadosEstoqueGlobal = Object.values(estoque);
-    document.getElementById('kpi-itens').innerText = dadosEstoqueGlobal.length;
-    renderizarTabela(dadosEstoqueGlobal);
+function render(){
+  const dts=L.filter(l=>l.d).map(l=>+l.d);
+  const ok=l=>(!F.cat||l.cat===F.cat)&&(!F.mk||l.mk===F.mk)&&(!F.prod||l.p===F.prod);
+  let a=null,b=null;
+  if(dts.length){a=F.from?new Date(F.from+'T00:00'):new Date(Math.min(...dts));b=F.to?new Date(F.to+'T23:59:59'):new Date(Math.max(...dts));b.setHours(23,59,59)}
+  const W=$('warn');
+  if(!dts.length){W.style.display='block';W.textContent='Não encontrei a data das compras. Campos aceitos: '+DATE_KEYS.join(', ')+'. Informe o nome do seu campo para eu ajustar.'}else W.style.display='none';
+  const len=a?b-a:0,pa=a?new Date(+a-len):null;
+  const cur=L.filter(l=>ok(l)&&(!a||(l.d&&l.d>=a&&l.d<=b)));
+  const prev=a?L.filter(l=>ok(l)&&l.d&&l.d>=pa&&l.d<a):[];
+  const sc=stats(cur),sp=stats(prev);
+  $('periodo').textContent=a?`${fd(a)} a ${fd(b)} · ${sc.n} notas fiscais`:`${sc.n} notas fiscais`;
+  const est=E.filter(e=>(!F.cat||e.categoria===F.cat)&&(!F.prod||e.nome===F.prod));
 
-    // Renderiza Gráficos
-    renderizarGraficos(gastosPorCategoria, gastosPorMercado);
+  const K=[['t','Total gasto',brl(sc.t),delta(sc.t,sp.t)],['n','Notas fiscais',sc.n,delta(sc.n,sp.n)],
+    ['k','Ticket médio',brl(sc.tk),delta(sc.tk,sp.tk)],
+    ['i','Dias entre compras',sc.iv==null?'–':sc.iv.toFixed(1).replace('.',',')+' dias',`<span class="dl">${sp.iv==null?'média no período':'anterior: '+sp.iv.toFixed(1).replace('.',',')+' dias'}</span>`],
+    ['s','Itens em estoque',est.length,'<span class="dl">posição atual</span>']];
+  $('kpis').innerHTML=K.map(k=>`<div class="card kpi"><div class="kh"><span>${k[1]}</span><svg viewBox="0 0 24 24">${IC[k[0]]}</svg></div><div class="kv">${k[2]}</div><div>${k[3]}</div></div>`).join('');
+
+  // Série temporal
+  const cs={},ps={};
+  cur.forEach(l=>{if(l.d){const k=key(l.d,G);cs[k]=(cs[k]||0)+l.v}});
+  prev.forEach(l=>{const k=key(new Date(+l.d+len),G);ps[k]=(ps[k]||0)+l.v});
+  const ks=Object.keys(cs).sort(),vs=ks.map(k=>cs[k]);
+  const mx=vs.length?vs.indexOf(Math.max(...vs)):-1;
+  let tr='';
+  if(vs.length>2){
+    const n=vs.length,mean=sum(vs.map(v=>({v})))/n;let sx=0,sy=0,sxy=0,sxx=0;
+    vs.forEach((y,x)=>{sx+=x;sy+=y;sxy+=x*y;sxx+=x*x});
+    const sl=(n*sxy-sx*sy)/(n*sxx-sx*sx),r=mean?sl/mean:0;
+    tr=Math.abs(r)<.03?'Tendência estável':r>0?'Tendência de alta':'Tendência de queda';
+    tr+=` · pico em ${lab(ks[mx],G)} (${brl(vs[mx])})`;
   }
+  $('trend').textContent=tr;
+  draw('cTempo',{type:'line',data:{labels:ks.map(k=>lab(k,G)),datasets:[
+    {label:'Período atual',data:vs,borderColor:'#0f5c6e',backgroundColor:'rgba(15,92,110,.08)',fill:true,tension:.3,borderWidth:2,
+     pointRadius:vs.map((_,i)=>i===mx?6:2),pointBackgroundColor:vs.map((_,i)=>i===mx?'#e8a13a':'#0f5c6e'),pointBorderColor:'#fff'},
+    {label:'Período anterior',data:ks.map(k=>ps[k]??null),borderColor:'#a9b4b8',borderDash:[5,5],borderWidth:1.5,pointRadius:0,tension:.3,spanGaps:true}]},
+   options:{maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+brl(c.raw||0)}}},
+    scales:{x:{grid:{display:false}},y:{beginAtZero:true,grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}}}}});
 
-  function renderizarGraficos(categorias, mercados) {
-    // 1. Gráfico de Rosca: Categorias
-    const ctxCat = document.getElementById('chartCategorias').getContext('2d');
-    if (graficoCategorias) graficoCategorias.destroy();
-    
-    graficoCategorias = new Chart(ctxCat, {
-      type: 'doughnut',
-      data: {
-        labels: Object.keys(categorias),
-        datasets: [{
-          data: Object.values(categorias),
-          backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#64748b']
-        }]
-      },
-      options: { responsive: true, maintainAspectRatio: false }
-    });
+  // Rankings
+  const grp=(a,k)=>{const m={};a.forEach(l=>m[l[k]]=(m[l[k]]||0)+l.v);return m};
+  const top=(m,n)=>Object.entries(m).sort((x,y)=>y[1]-x[1]).slice(0,n);
+  const gp=grp(cur,'p'),gpp=grp(prev,'p'),gc=grp(cur,'cat');
+  hbar('cProd',top(gp,8),'prod','#0f5c6e');
+  hbar('cCat',top(gc,4),'cat','#0f5c6e');
+  hbar('cMk',top(grp(cur,'mk'),4),'mk','#0f5c6e');
 
-    // 2. Gráfico de Barras: Mercados
-    const ctxMerc = document.getElementById('chartMercados').getContext('2d');
-    if (graficoMercados) graficoMercados.destroy();
-
-    graficoMercados = new Chart(ctxMerc, {
-      type: 'bar',
-      data: {
-        labels: Object.keys(mercados),
-        datasets: [{
-          label: 'Total Gasto (R$)',
-          data: Object.values(mercados),
-          backgroundColor: '#2563eb'
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: { y: { beginAtZero: true } }
-      }
-    });
+  // Insights
+  const I=[],tot=sc.t;
+  if(tot){
+    const t3=top(gp,3),s3=sum(t3.map(x=>({v:x[1]})))/tot*100;
+    I.push(['',`Top 3 produtos = ${s3.toFixed(0)}% do gasto`,t3.map(x=>x[0]).join(', ')]);
+    const c1=top(gc,1)[0];I.push(['',`${c1[0]} lidera as categorias`,`${(c1[1]/tot*100).toFixed(0)}% do total gasto (${brl(c1[1])}).`]);
   }
+  const ch=Object.keys(gp).filter(k=>gpp[k]).map(k=>[k,pct(gp[k],gpp[k]),gp[k]-gpp[k]]).sort((x,y)=>y[1]-x[1]);
+  if(ch.length&&ch[0][1]>0)I.push(['up',`Maior alta: ${ch[0][0]}`,`+${ch[0][1].toFixed(0)}% vs. período anterior (${brl(ch[0][2])}).`]);
+  const ql=ch[ch.length-1];if(ql&&ql[1]<0)I.push(['dn',`Maior queda: ${ql[0]}`,`${ql[1].toFixed(0)}% vs. período anterior (${brl(ql[2])}).`]);
+  const old=est.filter(e=>{const d=parseD(e.ultima_compra);return d&&(Date.now()-d)/864e5>30});
+  if(old.length)I.push(['dn',`${old.length} itens sem compra há 30+ dias`,old.slice(0,3).map(e=>e.nome).join(', ')+(old.length>3?'…':'')+' — revise se ainda são necessários.']);
+  $('ins').innerHTML=I.length?I.map(i=>`<div class="card in"><div class="dot ${i[0]}"></div><div><b>${esc(i[1])}</b><span>${esc(i[2])}</span></div></div>`).join(''):'<div class="card in"><span>Sem dados suficientes para insights neste filtro.</span></div>';
 
-  function renderizarTabela(itens) {
-    const tbody = document.getElementById('estoqueBody');
-    tbody.innerHTML = '';
+  // Tabela
+  const last={},cat={};cur.forEach(l=>{cat[l.p]=l.cat;if(l.d&&(!last[l.p]||l.d>last[l.p]))last[l.p]=l.d});
+  const sm={};E.forEach(e=>{if(e.nome)sm[e.nome.toLowerCase()]=e});
+  $('tb').innerHTML=top(gp,10).map(([p,v])=>{
+    const x=pct(v,gpp[p]),s=sm[p.toLowerCase()];
+    return`<tr data-p="${esc(p)}"><td><b style="font-weight:500">${esc(p)}</b></td><td><span class="tag">${esc(cat[p])}</span></td><td class="r">${brl(v)}</td>
+    <td class="r ${x==null?'':x>=0?'up':'dn'}">${x==null?'–':(x>=0?'+':'')+x.toFixed(0)+'%'}</td><td class="r">${last[p]?fd(last[p]):'–'}</td>
+    <td class="r">${s?esc((s.quantidade_total||0)+' '+(s.unidade||'un')):'–'}</td></tr>`}).join('')||'<tr><td colspan="6" style="color:var(--mut)">Nenhum produto neste filtro.</td></tr>';
+}
+$('tb').onclick=e=>{const tr=e.target.closest('tr');if(tr&&tr.dataset.p){F.prod=tr.dataset.p;sync();render();scrollTo({top:0,behavior:'smooth'})}};
 
-    itens.forEach(it => {
-      const tr = document.createElement('tr');
-      const preco = it.ultimo_preco_unitario 
-        ? Number(it.ultimo_preco_unitario).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
-        : '-';
-
-      tr.innerHTML = `
-        <td style="font-weight: 500;">${it.nome || '-'}</td>
-        <td><span style="background: #e2e8f0; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${it.categoria || 'Geral'}</span></td>
-        <td>${it.quantidade_total || 0} ${it.unidade || 'un'}</td>
-        <td>${it.ultima_compra || '-'}</td>
-        <td>${preco}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-  }
-
-  function filtrarTabela() {
-    const termo = document.getElementById('filtroEstoque').value.toLowerCase();
-    const filtrados = dadosEstoqueGlobal.filter(it => 
-      (it.nome && it.nome.toLowerCase().includes(termo)) ||
-      (it.categoria && it.categoria.toLowerCase().includes(termo))
-    );
-    renderizarTabela(filtrados);
-  }
-
-  // Executa na carga da página
-  window.onload = carregarDados;
+function draw(id,cfg){if(charts[id])charts[id].destroy();charts[id]=new Chart($(id),cfg)}
+const rotulos={id:'rotulos',afterDatasetsDraw(c){
+  const x=c.ctx;x.save();x.font='500 11px Inter,sans-serif';x.fillStyle='#14272e';x.textBaseline='middle';
+  c.getDatasetMeta(0).data.forEach((b,i)=>x.fillText(brl(c.data.datasets[0].data[i]),b.x+6,b.y));
+  x.restore();
+}};
+function hbar(id,en,k,color){
+  draw(id,{type:'bar',plugins:[rotulos],data:{labels:en.map(e=>e[0].length>24?e[0].slice(0,23)+'…':e[0]),
+    datasets:[{data:en.map(e=>e[1]),backgroundColor:en.map(e=>F[k]===e[0]?'#10a37f':color),borderRadius:4,barThickness:14}]},
+   options:{indexAxis:'y',maintainAspectRatio:false,layout:{padding:{right:64}},
+    onClick:(_,el)=>{if(el.length){const n=en[el[0].index][0];F[k]=F[k]===n?'':n;sync();render()}},
+    plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>brl(c.raw)}}},
+    scales:{x:{grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}},y:{grid:{display:false}}}}});
+}
+window.onload=carregar;
 </script>
-
 </body>
 </html>
