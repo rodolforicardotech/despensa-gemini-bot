@@ -62,8 +62,7 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
     <button class="btn" onclick="carregar()">Atualizar dados</button>
   </div>
   <div class="filters">
-    <label>De<input type="date" id="f-from"></label>
-    <label>Até<input type="date" id="f-to"></label>
+    <label>Mês<select id="f-mes"></select></label>
     <label>Categoria<select id="f-cat"></select></label>
     <label>Supermercado<select id="f-mk"></select></label>
     <label>Produto<input list="dl-prod" id="f-prod" placeholder="Todos"><datalist id="dl-prod"></datalist></label>
@@ -99,13 +98,20 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
   </section>
 
   <section>
-    <h2 style="margin-bottom:14px">Análise</h2>
-    <div class="ins" id="ins"></div>
-    <div class="card" style="margin-top:16px">
+    <div class="card">
       <div class="ch"><h2>Produtos em detalhe</h2><p class="hint">Top 10 por gasto · clique numa linha para filtrar</p></div>
       <div class="scroll"><table>
         <thead><tr><th>Produto</th><th>Categoria</th><th class="r">Gasto</th><th class="r">Vs. anterior</th><th class="r">Última compra</th><th class="r">Em estoque</th></tr></thead>
         <tbody id="tb"></tbody></table></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <div class="ch"><h2>Notas fiscais</h2><p class="hint" id="nf-hint"></p></div>
+      <div class="scroll" style="max-height:420px;overflow-y:auto"><table>
+        <thead><tr><th>Chave</th><th>Data da compra</th><th>Estabelecimento</th><th class="r">Valor</th></tr></thead>
+        <tbody id="nf"></tbody></table></div>
     </div>
   </section>
 </div>
@@ -125,8 +131,15 @@ let L=[],E=[],charts={},F={},G='month';
 function parseD(v){
   if(v==null)return null;
   if(typeof v==='number')return new Date(v<1e12?v*1000:v);
-  const m=String(v).match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\D+(\d{2}):(\d{2}))?/);
-  if(m)return new Date(+m[3],m[2]-1,+m[1],+(m[4]||0),+(m[5]||0));
+  
+  // Trata formato brasileiro: DD/MM/YYYY
+  const mBr=String(v).match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\D+(\d{2}):(\d{2}))?/);
+  if(mBr)return new Date(+mBr[3], mBr[2]-1, +mBr[1], +(mBr[4]||0), +(mBr[5]||0));
+  
+  // Trata formato ISO: YYYY-MM-DD (adiciona hora local para não subtrair 3 horas do fuso)
+  const mIso=String(v).match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if(mIso)return new Date(+mIso[1], mIso[2]-1, +mIso[3], +(mIso[4]||0), +(mIso[5]||0), +(mIso[6]||0));
+
   const d=new Date(v);return isNaN(d)?null:d;
 }
 // Nome do item: tenta campos comuns; se nenhum existir, usa o maior texto do item (exceto categoria, unidade e códigos)
@@ -149,7 +162,7 @@ async function carregar(){
     Object.entries(c).forEach(([id,n])=>{
       const d=parseD(pick(n,DATE_KEYS)),mk=n.estabelecimento||'Supermercado';
       const its=Array.isArray(n.itens)?n.itens:Object.values(n.itens||{});
-      its.forEach(i=>L.push({id,d,mk,cat:i.categoria||'Geral',p:nomeItem(i),q:Number(pick(i,['quantidade','qtd','qtde'])||0),v:Number(i.preco_total)||0}));
+      its.forEach(i=>L.push({id,k:String(n.identificador_nota||''),d,mk,cat:i.categoria||'Geral',p:nomeItem(i),q:Number(pick(i,['quantidade','qtd','qtde'])||0),v:Number(i.preco_total)||0}));
     });
     opts();render();
   }catch(e){$('warn').style.display='block';$('warn').textContent='Erro ao conectar ao Firebase: '+e.message}
@@ -157,13 +170,18 @@ async function carregar(){
 function opts(){
   const u=k=>[...new Set(L.map(l=>l[k]))].sort();
   $('f-cat').innerHTML='<option value="">Todas</option>'+u('cat').map(x=>`<option>${esc(x)}</option>`).join('');
+  const ms=[...new Set(L.filter(l=>l.d).map(l=>key(l.d,'month')))].sort().reverse();
+  $('f-mes').innerHTML='<option value="">Todos os meses</option>'+ms.map(m=>{const[y,n]=m.split('-');return`<option value="${m}">${new Date(y,n-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}</option>`}).join('');
   $('f-mk').innerHTML='<option value="">Todos</option>'+u('mk').map(x=>`<option>${esc(x)}</option>`).join('');
   $('dl-prod').innerHTML=u('p').map(x=>`<option value="${esc(x)}">`).join('');
 }
-function sync(){$('f-from').value=F.from||'';$('f-to').value=F.to||'';$('f-cat').value=F.cat||'';$('f-mk').value=F.mk||'';$('f-prod').value=F.prod||''}
-[['f-from','from'],['f-to','to'],['f-cat','cat'],['f-mk','mk'],['f-prod','prod']].forEach(([id,k])=>$(id).addEventListener('change',e=>{F[k]=e.target.value;render()}));
+function sync(){$('f-mes').value=F.mes||'';$('f-cat').value=F.cat||'';$('f-mk').value=F.mk||'';$('f-prod').value=F.prod||''}
+[['f-mes','mes'],['f-cat','cat'],['f-mk','mk'],['f-prod','prod']].forEach(([id,k])=>$(id).addEventListener('change',e=>{
+  F[k]=e.target.value;if(k==='mes')F.bk='';
+  if(k==='mes'&&F.mes&&G==='month'){G='day';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g==='day'))}
+  render()}));
 $('limpar').onclick=()=>{F={};sync();render()};
-$('gran').onclick=e=>{const g=e.target.dataset.g;if(!g)return;G=g;[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g===g));render()};
+$('gran').onclick=e=>{const g=e.target.dataset.g;if(!g)return;G=g;F.bk='';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g===g));render()};
 
 const sum=(a,f='v')=>a.reduce((s,l)=>s+l[f],0);
 function stats(a){
@@ -193,15 +211,20 @@ const IC={
 function render(){
   const dts=L.filter(l=>l.d).map(l=>+l.d);
   const ok=l=>(!F.cat||l.cat===F.cat)&&(!F.mk||l.mk===F.mk)&&(!F.prod||l.p===F.prod);
-  let a=null,b=null;
-  if(dts.length){a=F.from?new Date(F.from+'T00:00'):new Date(Math.min(...dts));b=F.to?new Date(F.to+'T23:59:59'):new Date(Math.max(...dts));b.setHours(23,59,59)}
+  let a=null,b=null,pa=null;
+  if(F.mes){const[y,m]=F.mes.split('-').map(Number);a=new Date(y,m-1,1);b=new Date(y,m,0,23,59,59);pa=new Date(y,m-2,1)}
+  else if(dts.length){a=new Date(Math.min(...dts));b=new Date(Math.max(...dts));b.setHours(23,59,59)}
   const W=$('warn');
   if(!dts.length){W.style.display='block';W.textContent='Não encontrei a data das compras. Campos aceitos: '+DATE_KEYS.join(', ')+'. Informe o nome do seu campo para eu ajustar.'}else W.style.display='none';
-  const len=a?b-a:0,pa=a?new Date(+a-len):null;
-  const cur=L.filter(l=>ok(l)&&(!a||(l.d&&l.d>=a&&l.d<=b)));
-  const prev=a?L.filter(l=>ok(l)&&l.d&&l.d>=pa&&l.d<a):[];
+  const len=a?b-a:0;if(a&&!pa)pa=new Date(+a-len);const sh=a?a-pa:0;
+  const curT=L.filter(l=>ok(l)&&(!a||(l.d&&l.d>=a&&l.d<=b)));
+  const prevT=a?L.filter(l=>ok(l)&&l.d&&l.d>=pa&&l.d<a):[];
+  // recorte escolhido no gráfico: afeta tudo, menos a própria série
+  const cur=F.bk?curT.filter(l=>l.d&&key(l.d,G)===F.bk):curT;
+  const prev=F.bk?prevT.filter(l=>key(new Date(+l.d+sh),G)===F.bk):prevT;
   const sc=stats(cur),sp=stats(prev);
   $('periodo').textContent=a?`${fd(a)} a ${fd(b)} · ${sc.n} notas fiscais`:`${sc.n} notas fiscais`;
+  if(F.bk)$('periodo').textContent+=' · recorte: '+lab(F.bk,G);
   const est=E.filter(e=>(!F.cat||e.categoria===F.cat)&&(!F.prod||e.nome===F.prod));
 
   const K=[['t','Total gasto',brl(sc.t),delta(sc.t,sp.t)],['n','Notas fiscais',sc.n,delta(sc.n,sp.n)],
@@ -212,9 +235,10 @@ function render(){
 
   // Série temporal
   const cs={},ps={};
-  cur.forEach(l=>{if(l.d){const k=key(l.d,G);cs[k]=(cs[k]||0)+l.v}});
-  prev.forEach(l=>{const k=key(new Date(+l.d+len),G);ps[k]=(ps[k]||0)+l.v});
+  curT.forEach(l=>{if(l.d){const k=key(l.d,G);cs[k]=(cs[k]||0)+l.v}});
+  prevT.forEach(l=>{const k=key(new Date(+l.d+sh),G);ps[k]=(ps[k]||0)+l.v});
   const ks=Object.keys(cs).sort(),vs=ks.map(k=>cs[k]);
+  const sel=ks.indexOf(F.bk);
   const mx=vs.length?vs.indexOf(Math.max(...vs)):-1;
   let tr='';
   if(vs.length>2){
@@ -224,12 +248,14 @@ function render(){
     tr=Math.abs(r)<.03?'Tendência estável':r>0?'Tendência de alta':'Tendência de queda';
     tr+=` · pico em ${lab(ks[mx],G)} (${brl(vs[mx])})`;
   }
-  $('trend').textContent=tr;
+  $('trend').textContent=[tr,F.bk?'Filtrado em '+lab(F.bk,G)+' · clique de novo para remover':'Clique num ponto para filtrar'].filter(Boolean).join(' · ');
   draw('cTempo',{type:'line',data:{labels:ks.map(k=>lab(k,G)),datasets:[
     {label:'Período atual',data:vs,borderColor:'#0f5c6e',backgroundColor:'rgba(15,92,110,.08)',fill:true,tension:.3,borderWidth:2,
-     pointRadius:vs.map((_,i)=>i===mx?6:2),pointBackgroundColor:vs.map((_,i)=>i===mx?'#e8a13a':'#0f5c6e'),pointBorderColor:'#fff'},
+     pointRadius:vs.map((_,i)=>i===sel?7:i===mx?6:3),pointHoverRadius:7,pointBackgroundColor:vs.map((_,i)=>i===sel?'#10a37f':i===mx?'#e8a13a':'#0f5c6e'),pointBorderColor:'#fff'},
     {label:'Período anterior',data:ks.map(k=>ps[k]??null),borderColor:'#a9b4b8',borderDash:[5,5],borderWidth:1.5,pointRadius:0,tension:.3,spanGaps:true}]},
    options:{maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    onClick:(_,el)=>{if(el.length){const k=ks[el[0].index];F.bk=F.bk===k?'':k;render()}},
+    onHover:(e,el)=>{e.native.target.style.cursor=el.length?'pointer':'default'},
     plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+brl(c.raw||0)}}},
     scales:{x:{grid:{display:false}},y:{beginAtZero:true,grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}}}}});
 
@@ -241,20 +267,6 @@ function render(){
   hbar('cCat',top(gc,4),'cat','#0f5c6e');
   hbar('cMk',top(grp(cur,'mk'),4),'mk','#0f5c6e');
 
-  // Insights
-  const I=[],tot=sc.t;
-  if(tot){
-    const t3=top(gp,3),s3=sum(t3.map(x=>({v:x[1]})))/tot*100;
-    I.push(['',`Top 3 produtos = ${s3.toFixed(0)}% do gasto`,t3.map(x=>x[0]).join(', ')]);
-    const c1=top(gc,1)[0];I.push(['',`${c1[0]} lidera as categorias`,`${(c1[1]/tot*100).toFixed(0)}% do total gasto (${brl(c1[1])}).`]);
-  }
-  const ch=Object.keys(gp).filter(k=>gpp[k]).map(k=>[k,pct(gp[k],gpp[k]),gp[k]-gpp[k]]).sort((x,y)=>y[1]-x[1]);
-  if(ch.length&&ch[0][1]>0)I.push(['up',`Maior alta: ${ch[0][0]}`,`+${ch[0][1].toFixed(0)}% vs. período anterior (${brl(ch[0][2])}).`]);
-  const ql=ch[ch.length-1];if(ql&&ql[1]<0)I.push(['dn',`Maior queda: ${ql[0]}`,`${ql[1].toFixed(0)}% vs. período anterior (${brl(ql[2])}).`]);
-  const old=est.filter(e=>{const d=parseD(e.ultima_compra);return d&&(Date.now()-d)/864e5>30});
-  if(old.length)I.push(['dn',`${old.length} itens sem compra há 30+ dias`,old.slice(0,3).map(e=>e.nome).join(', ')+(old.length>3?'…':'')+' — revise se ainda são necessários.']);
-  $('ins').innerHTML=I.length?I.map(i=>`<div class="card in"><div class="dot ${i[0]}"></div><div><b>${esc(i[1])}</b><span>${esc(i[2])}</span></div></div>`).join(''):'<div class="card in"><span>Sem dados suficientes para insights neste filtro.</span></div>';
-
   // Tabela
   const last={},cat={};cur.forEach(l=>{cat[l.p]=l.cat;if(l.d&&(!last[l.p]||l.d>last[l.p]))last[l.p]=l.d});
   const sm={};E.forEach(e=>{if(e.nome)sm[e.nome.toLowerCase()]=e});
@@ -263,6 +275,11 @@ function render(){
     return`<tr data-p="${esc(p)}"><td><b style="font-weight:500">${esc(p)}</b></td><td><span class="tag">${esc(cat[p])}</span></td><td class="r">${brl(v)}</td>
     <td class="r ${x==null?'':x>=0?'up':'dn'}">${x==null?'–':(x>=0?'+':'')+x.toFixed(0)+'%'}</td><td class="r">${last[p]?fd(last[p]):'–'}</td>
     <td class="r">${s?esc((s.quantidade_total||0)+' '+(s.unidade||'un')):'–'}</td></tr>`}).join('')||'<tr><td colspan="6" style="color:var(--mut)">Nenhum produto neste filtro.</td></tr>';
+  const nm={};
+  cur.forEach(l=>{const n=nm[l.id]||(nm[l.id]={k:l.k,d:l.d,mk:l.mk,v:0});n.v+=l.v});
+  const nl=Object.values(nm).sort((x,y)=>(y.d||0)-(x.d||0));
+  $('nf-hint').textContent=nl.length+' notas · '+brl(sc.t);
+  $('nf').innerHTML=nl.map(n=>`<tr style="cursor:default"><td style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-all">${n.k?esc(/^\d+$/.test(n.k)?n.k.replace(/(\d{4})(?=\d)/g,'$1 '):n.k):'–'}</td><td>${n.d?fd(n.d):'–'}</td><td>${esc(n.mk)}</td><td class="r">${brl(n.v)}</td></tr>`).join('')||'<tr><td colspan="4" style="color:var(--mut)">Nenhuma nota neste filtro.</td></tr>';
 }
 $('tb').onclick=e=>{const tr=e.target.closest('tr');if(tr&&tr.dataset.p){F.prod=tr.dataset.p;sync();render();scrollTo({top:0,behavior:'smooth'})}};
 
