@@ -52,6 +52,7 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
 .r{text-align:right;font-variant-numeric:tabular-nums}
 .tag{background:#eef1f1;border-radius:6px;padding:2px 8px;font-size:12px;color:var(--mut)}
 .scroll{overflow-x:auto}
+.scroll th{position:sticky;top:0;background:#fff;z-index:1}
 @media(max-width:860px){.grid{grid-template-columns:1fr}.wrap{padding:0 16px 40px}}
 </style>
 </head>
@@ -99,10 +100,20 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
 
   <section>
     <div class="card">
-      <div class="ch"><h2>Produtos em detalhe</h2><p class="hint">Top 10 por gasto · clique numa linha para filtrar</p></div>
-      <div class="scroll"><table>
+      <div class="ch"><h2>Produtos em detalhe</h2><p class="hint">Todos os produtos, por gasto · clique numa linha para filtrar</p></div>
+      <div class="scroll" style="max-height:420px;overflow-y:auto"><table>
         <thead><tr><th>Produto</th><th>Categoria</th><th class="r">Gasto</th><th class="r">Vs. anterior</th><th class="r">Última compra</th><th class="r">Em estoque</th></tr></thead>
         <tbody id="tb"></tbody></table></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <div class="ch">
+        <div><h2>Itens mais comprados</h2><p class="hint">Top 10 · clique numa barra para filtrar</p></div>
+        <div class="seg" id="cmode"><button data-m="cnt" class="on">Vezes comprado</button><button data-m="qtd">Quantidade</button></div>
+      </div>
+      <div class="box" style="height:340px"><canvas id="cItens"></canvas></div>
     </div>
   </section>
 
@@ -126,7 +137,7 @@ const brl=v=>v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pick=(o,ks)=>{for(const k of ks)if(o&&o[k]!=null&&o[k]!=='')return o[k]};
 const fd=d=>d.toLocaleDateString('pt-BR');
-let L=[],E=[],charts={},F={},G='month';
+let L=[],E=[],charts={},F={},G='month',CM='cnt';
 
 function parseD(v){
   if(v==null)return null;
@@ -162,7 +173,7 @@ async function carregar(){
     Object.entries(c).forEach(([id,n])=>{
       const d=parseD(pick(n,DATE_KEYS)),mk=n.estabelecimento||'Supermercado';
       const its=Array.isArray(n.itens)?n.itens:Object.values(n.itens||{});
-      its.forEach(i=>L.push({id,k:String(n.identificador_nota||''),d,mk,cat:i.categoria||'Geral',p:nomeItem(i),q:Number(pick(i,['quantidade','qtd','qtde'])||0),v:Number(i.preco_total)||0}));
+      its.forEach(i=>L.push({id,k:String(n.identificador_nota||''),d,mk,cat:i.categoria||'Geral',p:nomeItem(i),q:Number(pick(i,['quantidade','qtd','qtde'])??1)||0,v:Number(i.preco_total)||0}));
     });
     opts();render();
   }catch(e){$('warn').style.display='block';$('warn').textContent='Erro ao conectar ao Firebase: '+e.message}
@@ -177,7 +188,7 @@ function opts(){
 }
 function sync(){$('f-mes').value=F.mes||'';$('f-cat').value=F.cat||'';$('f-mk').value=F.mk||'';$('f-prod').value=F.prod||''}
 [['f-mes','mes'],['f-cat','cat'],['f-mk','mk'],['f-prod','prod']].forEach(([id,k])=>$(id).addEventListener('change',e=>{
-  F[k]=e.target.value;if(k==='mes')F.bk='';
+  F[k]=e.target.value;F.nota='';if(k==='mes')F.bk='';
   if(k==='mes'&&F.mes&&G==='month'){G='day';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g==='day'))}
   render()}));
 $('limpar').onclick=()=>{F={};sync();render()};
@@ -220,11 +231,13 @@ function render(){
   const curT=L.filter(l=>ok(l)&&(!a||(l.d&&l.d>=a&&l.d<=b)));
   const prevT=a?L.filter(l=>ok(l)&&l.d&&l.d>=pa&&l.d<a):[];
   // recorte escolhido no gráfico: afeta tudo, menos a própria série
-  const cur=F.bk?curT.filter(l=>l.d&&key(l.d,G)===F.bk):curT;
-  const prev=F.bk?prevT.filter(l=>key(new Date(+l.d+sh),G)===F.bk):prevT;
+  const curB=F.bk?curT.filter(l=>l.d&&key(l.d,G)===F.bk):curT;
+  const cur=F.nota?curB.filter(l=>l.id===F.nota):curB;
+  const prev=F.nota?[]:F.bk?prevT.filter(l=>key(new Date(+l.d+sh),G)===F.bk):prevT;
   const sc=stats(cur),sp=stats(prev);
   $('periodo').textContent=a?`${fd(a)} a ${fd(b)} · ${sc.n} notas fiscais`:`${sc.n} notas fiscais`;
   if(F.bk)$('periodo').textContent+=' · recorte: '+lab(F.bk,G);
+  if(F.nota)$('periodo').textContent+=' · nota selecionada';
   const est=E.filter(e=>(!F.cat||e.categoria===F.cat)&&(!F.prod||e.nome===F.prod));
 
   const K=[['t','Total gasto',brl(sc.t),delta(sc.t,sp.t)],['n','Notas fiscais',sc.n,delta(sc.n,sp.n)],
@@ -254,7 +267,7 @@ function render(){
      pointRadius:vs.map((_,i)=>i===sel?7:i===mx?6:3),pointHoverRadius:7,pointBackgroundColor:vs.map((_,i)=>i===sel?'#10a37f':i===mx?'#e8a13a':'#0f5c6e'),pointBorderColor:'#fff'},
     {label:'Período anterior',data:ks.map(k=>ps[k]??null),borderColor:'#a9b4b8',borderDash:[5,5],borderWidth:1.5,pointRadius:0,tension:.3,spanGaps:true}]},
    options:{maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-    onClick:(_,el)=>{if(el.length){const k=ks[el[0].index];F.bk=F.bk===k?'':k;render()}},
+    onClick:(_,el)=>{if(el.length){const k=ks[el[0].index];F.bk=F.bk===k?'':k;F.nota='';render()}},
     onHover:(e,el)=>{e.native.target.style.cursor=el.length?'pointer':'default'},
     plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+brl(c.raw||0)}}},
     scales:{x:{grid:{display:false}},y:{beginAtZero:true,grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}}}}});
@@ -266,36 +279,40 @@ function render(){
   hbar('cProd',top(gp,8),'prod','#0f5c6e');
   hbar('cCat',top(gc,4),'cat','#0f5c6e');
   hbar('cMk',top(grp(cur,'mk'),4),'mk','#0f5c6e');
+  const cm={};cur.forEach(l=>cm[l.p]=(cm[l.p]||0)+(CM==='qtd'?l.q:1));
+  hbar('cItens',top(cm,10),'prod','#0f5c6e',CM==='qtd'?v=>v.toLocaleString('pt-BR',{maximumFractionDigits:2}):String,CM!=='qtd');
 
   // Tabela
   const last={},cat={};cur.forEach(l=>{cat[l.p]=l.cat;if(l.d&&(!last[l.p]||l.d>last[l.p]))last[l.p]=l.d});
   const sm={};E.forEach(e=>{if(e.nome)sm[e.nome.toLowerCase()]=e});
-  $('tb').innerHTML=top(gp,10).map(([p,v])=>{
+  $('tb').innerHTML=top(gp,1e5).map(([p,v])=>{
     const x=pct(v,gpp[p]),s=sm[p.toLowerCase()];
     return`<tr data-p="${esc(p)}"><td><b style="font-weight:500">${esc(p)}</b></td><td><span class="tag">${esc(cat[p])}</span></td><td class="r">${brl(v)}</td>
     <td class="r ${x==null?'':x>=0?'up':'dn'}">${x==null?'–':(x>=0?'+':'')+x.toFixed(0)+'%'}</td><td class="r">${last[p]?fd(last[p]):'–'}</td>
     <td class="r">${s?esc((s.quantidade_total||0)+' '+(s.unidade||'un')):'–'}</td></tr>`}).join('')||'<tr><td colspan="6" style="color:var(--mut)">Nenhum produto neste filtro.</td></tr>';
   const nm={};
-  cur.forEach(l=>{const n=nm[l.id]||(nm[l.id]={k:l.k,d:l.d,mk:l.mk,v:0});n.v+=l.v});
+  curB.forEach(l=>{const n=nm[l.id]||(nm[l.id]={id:l.id,k:l.k,d:l.d,mk:l.mk,v:0});n.v+=l.v});
   const nl=Object.values(nm).sort((x,y)=>(y.d||0)-(x.d||0));
-  $('nf-hint').textContent=nl.length+' notas · '+brl(sc.t);
-  $('nf').innerHTML=nl.map(n=>`<tr style="cursor:default"><td style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-all">${n.k?esc(/^\d+$/.test(n.k)?n.k.replace(/(\d{4})(?=\d)/g,'$1 '):n.k):'–'}</td><td>${n.d?fd(n.d):'–'}</td><td>${esc(n.mk)}</td><td class="r">${brl(n.v)}</td></tr>`).join('')||'<tr><td colspan="4" style="color:var(--mut)">Nenhuma nota neste filtro.</td></tr>';
+  $('nf-hint').textContent=nl.length+' notas · '+brl(sum(curB))+' · clique para filtrar';
+  $('nf').innerHTML=nl.map(n=>`<tr data-id="${esc(n.id)}"${n.id===F.nota?' style="background:#e9f3f4"':''}><td style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-all">${n.k?esc(/^\d+$/.test(n.k)?n.k.replace(/(\d{4})(?=\d)/g,'$1 '):n.k):'–'}</td><td>${n.d?fd(n.d):'–'}</td><td>${esc(n.mk)}</td><td class="r">${brl(n.v)}</td></tr>`).join('')||'<tr><td colspan="4" style="color:var(--mut)">Nenhuma nota neste filtro.</td></tr>';
 }
+$('nf').onclick=e=>{const tr=e.target.closest('tr');if(tr&&tr.dataset.id){F.nota=F.nota===tr.dataset.id?'':tr.dataset.id;render()}};
+$('cmode').onclick=e=>{const m=e.target.dataset.m;if(!m)return;CM=m;[...$('cmode').children].forEach(b=>b.classList.toggle('on',b.dataset.m===m));render()};
 $('tb').onclick=e=>{const tr=e.target.closest('tr');if(tr&&tr.dataset.p){F.prod=tr.dataset.p;sync();render();scrollTo({top:0,behavior:'smooth'})}};
 
 function draw(id,cfg){if(charts[id])charts[id].destroy();charts[id]=new Chart($(id),cfg)}
 const rotulos={id:'rotulos',afterDatasetsDraw(c){
   const x=c.ctx;x.save();x.font='500 11px Inter,sans-serif';x.fillStyle='#14272e';x.textBaseline='middle';
-  c.getDatasetMeta(0).data.forEach((b,i)=>x.fillText(brl(c.data.datasets[0].data[i]),b.x+6,b.y));
+  c.getDatasetMeta(0).data.forEach((b,i)=>x.fillText((c.options.fmt||brl)(c.data.datasets[0].data[i]),b.x+6,b.y));
   x.restore();
 }};
-function hbar(id,en,k,color){
+function hbar(id,en,k,color,fmt,int){
   draw(id,{type:'bar',plugins:[rotulos],data:{labels:en.map(e=>e[0].length>24?e[0].slice(0,23)+'…':e[0]),
     datasets:[{data:en.map(e=>e[1]),backgroundColor:en.map(e=>F[k]===e[0]?'#10a37f':color),borderRadius:4,barThickness:14}]},
-   options:{indexAxis:'y',maintainAspectRatio:false,layout:{padding:{right:64}},
-    onClick:(_,el)=>{if(el.length){const n=en[el[0].index][0];F[k]=F[k]===n?'':n;sync();render()}},
-    plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>brl(c.raw)}}},
-    scales:{x:{grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}},y:{grid:{display:false}}}}});
+   options:{indexAxis:'y',maintainAspectRatio:false,fmt,layout:{padding:{right:64}},
+    onClick:(_,el)=>{if(el.length){const n=en[el[0].index][0];F[k]=F[k]===n?'':n;F.nota='';sync();render()}},
+    plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>(fmt||brl)(c.raw)}}},
+    scales:{x:{grid:{color:'#eef1f1'},ticks:{precision:int?0:undefined,callback:v=>fmt?fmt(v):'R$ '+v}},y:{grid:{display:false}}}}});
 }
 window.onload=carregar;
 </script>
