@@ -301,15 +301,17 @@ $('cmode').onclick=e=>{const m=e.target.dataset.m;if(!m)return;CM=m;[...$('cmode
 $('tb').onclick=e=>{const tr=e.target.closest('tr');if(tr&&tr.dataset.p){F.prod=tr.dataset.p;sync();render();scrollTo({top:0,behavior:'smooth'})}};
 
 function draw(id,cfg){if(charts[id])charts[id].destroy();charts[id]=new Chart($(id),cfg)}
+const FM={}; // formatador de cada gráfico (fora das options, que o Chart.js tentaria executar)
 const rotulos={id:'rotulos',afterDatasetsDraw(c){
   const x=c.ctx;x.save();x.font='500 11px Inter,sans-serif';x.fillStyle='#14272e';x.textBaseline='middle';
-  c.getDatasetMeta(0).data.forEach((b,i)=>x.fillText((c.options.fmt||brl)(c.data.datasets[0].data[i]),b.x+6,b.y));
+  c.getDatasetMeta(0).data.forEach((b,i)=>x.fillText((FM[c.canvas.id]||brl)(c.data.datasets[0].data[i]),b.x+6,b.y));
   x.restore();
 }};
 function hbar(id,en,k,color,fmt,int){
+  FM[id]=fmt;
   draw(id,{type:'bar',plugins:[rotulos],data:{labels:en.map(e=>e[0].length>24?e[0].slice(0,23)+'…':e[0]),
     datasets:[{data:en.map(e=>e[1]),backgroundColor:en.map(e=>F[k]===e[0]?'#10a37f':color),borderRadius:4,barThickness:14}]},
-   options:{indexAxis:'y',maintainAspectRatio:false,fmt,layout:{padding:{right:64}},
+   options:{indexAxis:'y',maintainAspectRatio:false,layout:{padding:{right:64}},
     onClick:(_,el)=>{if(el.length){const n=en[el[0].index][0];F[k]=F[k]===n?'':n;F.nota='';sync();render()}},
     plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>(fmt||brl)(c.raw)}}},
     scales:{x:{grid:{color:'#eef1f1'},ticks:{precision:int?0:undefined,callback:v=>fmt?fmt(v):'R$ '+v}},y:{grid:{display:false}}}}});
