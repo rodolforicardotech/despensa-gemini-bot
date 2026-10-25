@@ -51,6 +51,11 @@ td{padding:11px 10px;border-top:1px solid var(--line)}
 tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
 .r{text-align:right;font-variant-numeric:tabular-nums}
 .tag{background:#eef1f1;border-radius:6px;padding:2px 8px;font-size:12px;color:var(--mut)}
+.vale{display:flex;gap:28px;align-items:center;margin-top:24px;flex-wrap:wrap}
+.vb{flex:1;min-width:240px}
+.track{height:10px;background:#eef1f1;border-radius:6px;overflow:hidden}
+.track i{display:block;height:100%;background:var(--teal);border-radius:6px}
+.cyc{display:none;height:32px;border:1px solid var(--line);border-radius:8px;padding:0 8px;font:inherit;background:#fff;color:var(--ink)}
 .scroll{overflow-x:auto}
 .scroll th{position:sticky;top:0;background:#fff;z-index:1}
 @media(max-width:860px){.grid{grid-template-columns:1fr}.wrap{padding:0 16px 40px}}
@@ -73,15 +78,17 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
 
 <div class="wrap">
   <div class="warn" id="warn"></div>
+  <div class="card vale" id="vale"></div>
   <div class="kpis" id="kpis"></div>
 
   <section>
     <div class="card">
       <div class="ch">
-        <div><h2>Gasto ao longo do tempo</h2><p class="hint" id="trend"></p></div>
+        <div><h2 id="ttl">Gasto ao longo do tempo</h2><p class="hint" id="trend"></p></div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="seg" id="view"><button data-v="gasto" class="on">Gasto</button><button data-v="vale">Vale</button></div><select id="f-ciclo" class="cyc"></select>
         <div class="seg" id="gran">
           <button data-g="day">Dia</button><button data-g="week">Semana</button><button data-g="month" class="on">Mês</button>
-        </div>
+        </div></div>
       </div>
       <div class="box"><canvas id="cTempo"></canvas></div>
     </div>
@@ -131,13 +138,15 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
 <script>
 const FB=(typeof CONFIG!=='undefined'&&CONFIG.FIREBASE_URL)||"";
 // Nomes de campo aceitos para a data da compra (ajuste se o seu for diferente)
+// Vale-alimentação: valor e dia do crédito (o ciclo vai do dia 20 até o dia 19 do mês seguinte)
+const VALE=1750,VALE_DIA=20;
 const DATE_KEYS=['data','data_compra','data_emissao','dataEmissao','data_hora','timestamp','criado_em','created_at'];
 const $=id=>document.getElementById(id);
 const brl=v=>v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pick=(o,ks)=>{for(const k of ks)if(o&&o[k]!=null&&o[k]!=='')return o[k]};
 const fd=d=>d.toLocaleDateString('pt-BR');
-let L=[],E=[],charts={},F={},G='month',CM='cnt';
+let L=[],E=[],charts={},F={},G='month',CM='cnt',VC='',VIEW='gasto';
 
 function parseD(v){
   if(v==null)return null;
@@ -181,6 +190,8 @@ async function carregar(){
 function opts(){
   const u=k=>[...new Set(L.map(l=>l[k]))].sort();
   $('f-cat').innerHTML='<option value="">Todas</option>'+u('cat').map(x=>`<option>${esc(x)}</option>`).join('');
+  const cs=new Set([cycKey(cycStart(new Date()))]);L.forEach(l=>{if(l.d)cs.add(cycKey(cycStart(l.d)))});
+  $('f-ciclo').innerHTML=[...cs].sort().reverse().map(k=>{const s=new Date(+k.slice(0,4),+k.slice(5)-1,VALE_DIA),e=new Date(s.getFullYear(),s.getMonth()+1,VALE_DIA-1);return`<option value="${k}">${p2(s.getDate())}/${p2(s.getMonth()+1)} – ${p2(e.getDate())}/${p2(e.getMonth()+1)}</option>`}).join('');
   const ms=[...new Set(L.filter(l=>l.d).map(l=>key(l.d,'month')))].sort().reverse();
   $('f-mes').innerHTML='<option value="">Todos os meses</option>'+ms.map(m=>{const[y,n]=m.split('-');return`<option value="${m}">${new Date(y,n-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}</option>`}).join('');
   $('f-mk').innerHTML='<option value="">Todos</option>'+u('mk').map(x=>`<option>${esc(x)}</option>`).join('');
@@ -191,6 +202,8 @@ function sync(){$('f-mes').value=F.mes||'';$('f-cat').value=F.cat||'';$('f-mk').
   F[k]=e.target.value;F.nota='';if(k==='mes')F.bk='';
   if(k==='mes'&&F.mes&&G==='month'){G='day';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g==='day'))}
   render()}));
+$('view').onclick=e=>{const v=e.target.dataset.v;if(!v)return;VIEW=v;[...$('view').children].forEach(b=>b.classList.toggle('on',b.dataset.v===v));render()};
+$('f-ciclo').onchange=e=>{VC=e.target.value;render()};
 $('limpar').onclick=()=>{F={};sync();render()};
 $('gran').onclick=e=>{const g=e.target.dataset.g;if(!g)return;G=g;F.bk='';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g===g));render()};
 
@@ -219,7 +232,53 @@ const IC={
  i:'<circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/>',
  s:'<path d="M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8"/>'};
 
+const p2=n=>String(n).padStart(2,'0');
+const dOnly=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());
+const cycStart=d=>d.getDate()>=VALE_DIA?new Date(d.getFullYear(),d.getMonth(),VALE_DIA):new Date(d.getFullYear(),d.getMonth()-1,VALE_DIA);
+const cycKey=s=>s.getFullYear()+'-'+p2(s.getMonth()+1);
+function cycDaily(start){
+  const end=new Date(start.getFullYear(),start.getMonth()+1,VALE_DIA),n=Math.round((end-start)/864e5),a=Array(n).fill(0);
+  L.forEach(l=>{if(l.d&&l.d>=start&&l.d<end)a[Math.round((dOnly(l.d)-start)/864e5)]+=l.v});
+  return{end,n,a};
+}
+// Vale: soma TODAS as compras do ciclo (não depende dos filtros)
+function calcVale(){
+  const now=new Date(),c0=cycStart(now);
+  const start=VC?new Date(+VC.slice(0,4),+VC.slice(5)-1,VALE_DIA):c0;
+  const {end,n,a}=cycDaily(start);
+  const pv=cycDaily(new Date(start.getFullYear(),start.getMonth()-1,VALE_DIA));
+  let t=0;const cum=a.map(v=>+(t+=v).toFixed(2));
+  let pt=0;const pcum=pv.a.map(v=>+(pt+=v).toFixed(2));
+  const atual=+start===+c0,idx=Math.round((dOnly(now)-start)/864e5);
+  if(atual)for(let i=idx+1;i<n;i++)cum[i]=null;
+  const last=new Date(+end-864e5);
+  return{key:cycKey(start),lab:p2(start.getDate())+'/'+p2(start.getMonth()+1)+' – '+p2(last.getDate())+'/'+p2(last.getMonth()+1),
+    n,start,cum,pcum,spent:t,saldo:VALE-t,rest:atual?n-idx:null};
+}
+function valeCard(V){
+  const pct=V.spent/VALE*100,over=V.saldo<0;
+  const rest=V.rest==null?' · ciclo encerrado':' · '+V.rest+(V.rest>1?' dias restantes':' dia restante')+(V.saldo>0?' · até '+brl(V.saldo/V.rest)+'/dia':'');
+  $('vale').innerHTML=`<div><div class="kh"><span>Saldo do vale · ${V.lab}</span></div><div class="kv" style="margin-top:8px${over?';color:#b9791a':''}">${brl(V.saldo)}</div></div>
+  <div class="vb"><div class="track"><i style="width:${Math.min(100,pct)}%${over?';background:#e8a13a':''}"></i></div>
+  <div class="dl" style="margin-top:8px">${brl(V.spent)} gastos de ${brl(VALE)} (${pct.toFixed(0)}%)${rest}</div></div>`;
+  $('f-ciclo').value=V.key;
+  $('f-ciclo').style.display=VIEW==='vale'?'block':'none';
+  $('gran').style.display=VIEW==='vale'?'none':'';
+  $('ttl').textContent=VIEW==='vale'?'Vale-alimentação no ciclo':'Gasto ao longo do tempo';
+}
+function drawVale(V){
+  const lb=[];for(let i=0;i<V.n;i++){const d=new Date(V.start.getFullYear(),V.start.getMonth(),V.start.getDate()+i);lb.push(p2(d.getDate())+'/'+p2(d.getMonth()+1))}
+  const rest=a=>a.map(v=>v==null?null:+(VALE-v).toFixed(2));
+  const ds=[{label:'Saldo do vale',data:rest(V.cum),borderColor:'#0f5c6e',backgroundColor:'rgba(15,92,110,.08)',fill:true,tension:.2,borderWidth:2,pointRadius:0,pointHoverRadius:5}];
+  if(V.pcum.some(v=>v>0))ds.push({label:'Ciclo anterior',data:rest(V.pcum.slice(0,V.n)),borderColor:'#a9b4b8',borderDash:[5,5],borderWidth:1.5,pointRadius:0,tension:.2});
+  draw('cTempo',{type:'line',data:{labels:lb,datasets:ds},options:{maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>c.raw==null?null:c.dataset.label+': '+brl(c.raw)}}},
+    scales:{x:{grid:{display:false},ticks:{maxTicksLimit:10}},y:{suggestedMin:0,suggestedMax:VALE*1.05,grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}}}}});
+  $('trend').textContent='Saldo restante ao fim de cada dia · soma todas as compras do ciclo, sem aplicar os filtros';
+}
+
 function render(){
+  const V=calcVale();valeCard(V);
   const dts=L.filter(l=>l.d).map(l=>+l.d);
   const ok=l=>(!F.cat||l.cat===F.cat)&&(!F.mk||l.mk===F.mk)&&(!F.prod||l.p===F.prod);
   let a=null,b=null,pa=null;
@@ -262,7 +321,7 @@ function render(){
     tr+=` · pico em ${lab(ks[mx],G)} (${brl(vs[mx])})`;
   }
   $('trend').textContent=[tr,F.bk?'Filtrado em '+lab(F.bk,G)+' · clique de novo para remover':'Clique num ponto para filtrar'].filter(Boolean).join(' · ');
-  draw('cTempo',{type:'line',data:{labels:ks.map(k=>lab(k,G)),datasets:[
+  if(VIEW!=='vale')draw('cTempo',{type:'line',data:{labels:ks.map(k=>lab(k,G)),datasets:[
     {label:'Período atual',data:vs,borderColor:'#0f5c6e',backgroundColor:'rgba(15,92,110,.08)',fill:true,tension:.3,borderWidth:2,
      pointRadius:vs.map((_,i)=>i===sel?7:i===mx?6:3),pointHoverRadius:7,pointBackgroundColor:vs.map((_,i)=>i===sel?'#10a37f':i===mx?'#e8a13a':'#0f5c6e'),pointBorderColor:'#fff'},
     {label:'Período anterior',data:ks.map(k=>ps[k]??null),borderColor:'#a9b4b8',borderDash:[5,5],borderWidth:1.5,pointRadius:0,tension:.3,spanGaps:true}]},
@@ -271,6 +330,8 @@ function render(){
     onHover:(e,el)=>{e.native.target.style.cursor=el.length?'pointer':'default'},
     plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+brl(c.raw||0)}}},
     scales:{x:{grid:{display:false}},y:{beginAtZero:true,grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}}}}});
+
+  if(VIEW==='vale')drawVale(V);
 
   // Rankings
   const grp=(a,k)=>{const m={};a.forEach(l=>m[l[k]]=(m[l[k]]||0)+l.v);return m};
