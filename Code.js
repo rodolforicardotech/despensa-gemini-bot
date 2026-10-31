@@ -8,6 +8,9 @@ function doGet(e) {
 /**
  * Webhook do Telegram (POST).
  */
+/**
+ * Webhook do Telegram (POST) - Suporta fotos de notas fiscais e textos livres (almoços).
+ */
 function doPost(e) {
   const props = PropertiesService.getScriptProperties();
   const telegramToken = (props.getProperty("TELEGRAM_BOT_TOKEN") || "").trim();
@@ -28,98 +31,125 @@ function doPost(e) {
     }
 
     chatId = contents.message.chat.id;
-    const texto = (contents.message.text || "").trim().toLowerCase();
+    const texto = (contents.message.text || "").trim();
+    const textoLower = texto.toLowerCase();
     const photoArray = contents.message.photo;
 
-    // 1. Comandos de texto
-    if (texto === "/estoque" || texto === "/compras") {
+    // 1. Comandos de texto fixos
+    if (textoLower === "/estoque" || textoLower === "/compras") {
       const respostaEstoque = consultarEstoqueTelegram();
       enviarMensagemTelegram(chatId, respostaEstoque, telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    if (texto === "/start" || texto === "/ajuda") {
-      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal para cadastrar ou digite /estoque para ver os itens.", telegramToken);
+    if (textoLower === "/start" || textoLower === "/ajuda") {
+      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal ou digite um gasto livre (ex: 'almoço 35 no vale refeição')!", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // Validação de recebimento de imagem
-    if (!photoArray || photoArray.length === 0) {
-      enviarMensagemTelegram(chatId, "Envie uma foto da nota fiscal ou digite /estoque.", telegramToken);
+    let dadosNota = null;
+    let nomeArquivo = "";
+    let driveFile = null;
+
+    // 2. ROTA A: O usuário enviou uma FOTO
+    if (photoArray && photoArray.length > 0) {
+      enviarMensagemTelegram(chatId, "⏳ Baixando a imagem do Telegram...", telegramToken);
+
+      if (!folderEntradaId) {
+        enviarMensagemTelegram(chatId, "❌ Erro: FOLDER_ENTRADA_ID não configurado.", telegramToken);
+        return HtmlService.createHtmlOutput();
+      }
+
+      const foto = photoArray[photoArray.length - 1];
+      const getFileUrl = `https://api.telegram.org/bot${telegramToken}/getFile?file_id=${foto.file_id}`;
+      const fileRes = UrlFetchApp.fetch(getFileUrl, { muteHttpExceptions: true });
+      const fileJson = JSON.parse(fileRes.getContentText());
+
+      if (!fileJson.ok || !fileJson.result || !fileJson.result.file_path) {
+        enviarMensagemTelegram(chatId, "❌ Erro ao obter caminho do arquivo no Telegram.", telegramToken);
+        return HtmlService.createHtmlOutput();
+      }
+
+      const downloadUrl = `https://api.telegram.org/file/bot${telegramToken}/${fileJson.result.file_path}`;
+      const responseImg = UrlFetchApp.fetch(downloadUrl, { headers: { "Accept": "image/*" }, muteHttpExceptions: true });
+      const blob = responseImg.getBlob();
+
+      nomeArquivo = `Telegram_${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss")}.jpg`;
+      blob.setName(nomeArquivo);
+
+      const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
+      driveFile = pastaEntrada.createFile(blob);
+
+      enviarMensagemTelegram(chatId, "📸 Imagem salva! Analisando com Gemini...", telegramToken);
+
+      const imageBytes = driveFile.getBlob().getBytes();
+      const imageBase64 = Utilities.base64Encode(imageBytes);
+      const mimeType = driveFile.getMimeType() || "image/jpeg";
+
+      dadosNota = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
+
+    // 3. ROTA B: O usuário digitou um TEXTO LIVRE (almoço, café, despesa rápida)
+    } else if (texto && texto.length > 3) {
+      enviarMensagemTelegram(chatId, "✍️ Anotando despesa informada...", telegramToken);
+      nomeArquivo = "Lancamento_Manual_Telegram";
+      dadosNota = extrairDadosViaTexto(texto, geminiKey);
+
+    } else {
+      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal ou digite o gasto (ex: 'almoço 34,90 no va').", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    enviarMensagemTelegram(chatId, "⏳ A descarregar imagem do Telegram...", telegramToken);
-
-    if (!folderEntradaId) {
-      enviarMensagemTelegram(chatId, "❌ Erro: FOLDER_ENTRADA_ID não configurado.", telegramToken);
-      return HtmlService.createHtmlOutput();
-    }
-
-    // 2. Descarregar fotografia em maior resolução
-    const foto = photoArray[photoArray.length - 1];
-    const getFileUrl = `https://api.telegram.org/bot${telegramToken}/getFile?file_id=${foto.file_id}`;
-    const fileRes = UrlFetchApp.fetch(getFileUrl, { muteHttpExceptions: true });
-    const fileJson = JSON.parse(fileRes.getContentText());
-
-    if (!fileJson.ok || !fileJson.result || !fileJson.result.file_path) {
-      enviarMensagemTelegram(chatId, "❌ Erro ao obter caminho do ficheiro no Telegram.", telegramToken);
-      return HtmlService.createHtmlOutput();
-    }
-
-    const downloadUrl = `https://api.telegram.org/file/bot${telegramToken}/${fileJson.result.file_path}`;
-    const responseImg = UrlFetchApp.fetch(downloadUrl, { headers: { "Accept": "image/*" }, muteHttpExceptions: true });
-    const blob = responseImg.getBlob();
-
-    const nomeArquivo = `Telegram_${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss")}.jpg`;
-    blob.setName(nomeArquivo);
-
-    // Gravar na pasta de entrada do Drive
-    const pastaEntrada = DriveApp.getFolderById(folderEntradaId);
-    const driveFile = pastaEntrada.createFile(blob);
-
-    enviarMensagemTelegram(chatId, "📸 Ficheiro guardado! A analisar com Gemini...", telegramToken);
-
-    const imageBytes = driveFile.getBlob().getBytes();
-    const imageBase64 = Utilities.base64Encode(imageBytes);
-    const mimeType = driveFile.getMimeType() || "image/jpeg";
-
-    // 3. Processamento no Gemini
-    const dadosNota = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
-
+    // Validação do retorno da IA
     if (!dadosNota || !dadosNota.itens || dadosNota.itens.length === 0) {
-      enviarMensagemTelegram(chatId, "⚠️ Não consegui identificar itens nesta fatura.", telegramToken);
+      enviarMensagemTelegram(chatId, "⚠️ Não consegui estruturar os dados desse registro.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // Higienização da chave / identificador
+    // Higienização do identificador/chave
     let identificador = "";
     if (dadosNota.identificador_nota) {
       identificador = String(dadosNota.identificador_nota).replace(/\D/g, "").trim();
       dadosNota.identificador_nota = identificador;
     }
 
-    // Verificação de duplicados
-    if (identificador && notaJaCadastrada(identificador)) {
-      if (folderProcessadasId) driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
+    // Se a função validarECorrigirData existir no seu projeto, sanitiza a data
+    if (typeof validarECorrigirData === "function") {
+      dadosNota.data_compra = validarECorrigirData(dadosNota.data_compra, identificador);
+    }
+
+    // Verificação de duplicados (apenas se for chave real de nota fiscal)
+    if (identificador && !identificador.startsWith("MANUAL") && notaJaCadastrada(identificador)) {
+      if (driveFile && folderProcessadasId) driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
       enviarMensagemTelegram(chatId, `⚠️ Esta nota (${identificador}) já tinha sido cadastrada!`, telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // 4. Gravação na Folha de Cálculo e no Firebase
+    // 4. Gravação na planilha e no Firebase
     gravarNaPlanilha(dadosNota, nomeArquivo);
     salvarNoFirebase(dadosNota, nomeArquivo);
 
-    // Mover para a pasta de processadas
-    if (folderProcessadasId) {
+    // Mover arquivo de foto para processadas (se foi upload de foto)
+    if (driveFile && folderProcessadasId) {
       driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
     }
 
-    // 5. Confirmação no Telegram
+    // 5. Confirmação detalhada no Telegram
     const total = dadosNota.itens.reduce((acc, it) => acc + (Number(it.preco_total) || 0), 0);
-    const mercado = dadosNota.estabelecimento || "Supermercado";
+    const local = dadosNota.estabelecimento || "Supermercado / Refeição";
     const qtd = dadosNota.itens.length;
-    enviarMensagemTelegram(chatId, `✅ Salvo!\n🏪 ${mercado}\n📦 ${qtd} itens registados\n💰 Total: R$ ${total.toFixed(2).replace('.', ',')}`, telegramToken);
+    const pagto = dadosNota.forma_pagamento ? `💳 Forma: ${dadosNota.forma_pagamento}\n` : "";
+    
+    let dataFormatada = dadosNota.data_compra;
+    if (dataFormatada && dataFormatada.includes("-")) {
+      const p = dataFormatada.split("-");
+      if (p.length === 3) dataFormatada = `${p[2]}/${p[1]}/${p[0]}`;
+    }
+
+    enviarMensagemTelegram(
+      chatId,
+      `✅ Salvo com sucesso!\n📅 Data: ${dataFormatada}\n🏪 Local: ${local}\n📦 Itens: ${qtd}\n${pagto}💰 Total: R$ ${total.toFixed(2).replace('.', ',')}`,
+      telegramToken
+    );
 
   } catch (err) {
     Logger.log("Erro no doPost: " + err.toString());
@@ -129,6 +159,97 @@ function doPost(e) {
   }
 
   return HtmlService.createHtmlOutput();
+}
+
+/**
+ * Extrai dados estruturados a partir de mensagens de texto livres no Telegram.
+ */
+function extrairDadosViaTexto(mensagemTexto, apiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
+  const dataHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+
+  const promptTexto = `
+Você é um assistente financeiro pessoal. Extraia os dados da despesa informada pelo usuário em linguagem natural.
+Data de referência de hoje: ${dataHoje}.
+
+Regras:
+1. data_compra: Se o usuário mencionar "ontem", calcule a data respectiva relativa a ${dataHoje}. Se não mencionar data, retorne ${dataHoje}. Formato sempre YYYY-MM-DD.
+2. estabelecimento: Nome do local/restaurante ou "Almoço / Refeição" se não informado.
+3. tipo_gasto: Identifique se é "Almoço" (refeições/restaurantes) ou "Mercado" (mantimentos/compras).
+4. forma_pagamento: "Vale-Alimentação", "Vale-Refeição", "Crédito", "Débito", "Pix", ou "Outro". Se não mencionado e for almoço, assuma "Vale-Alimentação".
+5. identificador_nota: Gere um identificador no formato "MANUAL_YYYYMMDD_HHMMSS".
+6. itens:
+   - nome_original: O texto digitado pelo usuário.
+   - nome_padronizado: Nome limpo da refeição ou produto (ex: "Almoço Comercial", "Self Service", "Marmita").
+   - categoria: Para almoços/restaurantes, use "Alimentação Fora".
+   - quantidade: 1.
+   - unidade: "un".
+   - preco_unitario: O valor total gasto.
+   - preco_total: O valor total gasto.
+
+Mensagem do usuário: "${mensagemTexto}"
+  `;
+
+  const jsonSchema = {
+    type: "OBJECT",
+    properties: {
+      data_compra: { type: "STRING", description: "YYYY-MM-DD" },
+      estabelecimento: { type: "STRING" },
+      tipo_gasto: { type: "STRING", description: "'Almoço' ou 'Mercado'" },
+      forma_pagamento: { type: "STRING" },
+      identificador_nota: { type: "STRING" },
+      itens: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            nome_original: { type: "STRING" },
+            nome_padronizado: { type: "STRING" },
+            categoria: { type: "STRING" },
+            quantidade: { type: "NUMBER" },
+            unidade: { type: "STRING" },
+            preco_unitario: { type: "NUMBER" },
+            preco_total: { type: "NUMBER" }
+          },
+          required: ["nome_original", "nome_padronizado", "categoria", "quantidade", "preco_total"]
+        }
+      }
+    },
+    required: ["data_compra", "estabelecimento", "itens"]
+  };
+
+  const payload = {
+    contents: [{ parts: [{ text: promptTexto }] }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: jsonSchema,
+      temperature: 0.1
+    }
+  };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  for (let tentativa = 1; tentativa <= 3; tentativa++) {
+    const response = UrlFetchApp.fetch(url, options);
+    const statusCode = response.getResponseCode();
+
+    if (statusCode === 200) {
+      const jsonResponse = JSON.parse(response.getContentText());
+      return JSON.parse(jsonResponse.candidates[0].content.parts[0].text);
+    }
+
+    if ((statusCode === 500 || statusCode === 503 || statusCode === 429) && tentativa < 3) {
+      Utilities.sleep(2000 * tentativa);
+      continue;
+    }
+
+    throw new Error(`Erro na API do Gemini Texto (${statusCode}): ${response.getContentText()}`);
+  }
 }
 
 /**
@@ -181,19 +302,23 @@ function notaJaCadastrada(identificador) {
 function extrairDadosViaGemini(base64Image, mimeType, apiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
 
-  const promptTexto = `
+const promptTexto = `
 Você é um especialista em OCR e normalização de cupons fiscais brasileiros.
 Analise a nota fiscal e extraia os dados reais.
 
+ATENÇÃO CRÍTICA PARA 'data_compra':
+- O padrão impresso no cabeçalho costuma ser DD-MM-AA (ex: "21-10-26" significa 21 de outubro de 2026).
+- Converta SEMPRE para o formato completo YYYY-MM-DD (ex: "2026-10-21"). NUNCA interprete o dia como o ano 2021.
+
 ATENÇÃO CRÍTICA PARA 'identificador_nota':
-- PRIORIDADE MÁXIMA: Procure a "Chave de Acesso" de 44 dígitos (localizada no rodapé ou próxima ao QR Code, ex: "2326 0606 8876 6800 2718 6510 2000 0437 8617 3057 3679").
+- PRIORIDADE MÁXIMA: Procure a "Chave de Acesso" de 44 dígitos no rodapé ou próxima ao QR Code.
 - EXTRAIA OS 44 DÍGITOS NUMÉRICOS CONTÍNUOS, SEM ESPAÇOS.
-- APENAS se a nota estiver cortada ou ilegível no rodapé, utilize o número do CONTROLE / COO / Extrato.
+- APENAS se a nota estiver rasgada, use o número do CONTROLE / COO / Extrato.
 
 Campos obrigatórios:
 1. data_compra: Data no formato YYYY-MM-DD.
 2. estabelecimento: Nome ou razão social.
-3. identificador_nota: A Chave de Acesso de 44 dígitos contínuos (ou controle se ausente).
+3. identificador_nota: A Chave de Acesso de 44 dígitos (ou controle se ausente).
 4. itens:
    - nome_original: Descrição exatamente como impressa.
    - nome_padronizado: Nome decifrado e legível em português.
@@ -282,7 +407,11 @@ Campos obrigatórios:
 /**
  * Registo na aba Historico_Compras.
  */
+/**
+ * Registo na folha de cálculo (aba Historico_Compras).
+ */
 function gravarNaPlanilha(dadosNota, nomeArquivo) {
+  // 1. Inicializa "ss" logo na primeira linha
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let abaHistorico = ss.getSheetByName("Historico_Compras");
 
@@ -320,9 +449,17 @@ function gravarNaPlanilha(dadosNota, nomeArquivo) {
     nomeArquivo
   ]);
 
-  abaHistorico.getRange(abaHistorico.getLastRow() + 1, 1, linhasHistorico.length, linhasHistorico[0].length).setValues(linhasHistorico);
+  abaHistorico.getRange(
+    abaHistorico.getLastRow() + 1, 
+    1, 
+    linhasHistorico.length, 
+    linhasHistorico[0].length
+  ).setValues(linhasHistorico);
 
-  atualizarOuInserirEstoque(ss, dadosNota);
+  // 2. Só atualiza o stock se NÃO for almoço avulso
+  if (dadosNota.tipo_gasto !== "Almoço") {
+    atualizarOuInserirEstoque(ss, dadosNota);
+  }
 }
 
 /**
