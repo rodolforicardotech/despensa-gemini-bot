@@ -35,7 +35,7 @@ function doPost(e) {
     const textoLower = texto.toLowerCase();
     const photoArray = contents.message.photo;
 
-    // 1. Comandos de texto fixos
+    // 1. Comandos fixos
     if (textoLower === "/estoque" || textoLower === "/compras") {
       const respostaEstoque = consultarEstoqueTelegram();
       enviarMensagemTelegram(chatId, respostaEstoque, telegramToken);
@@ -43,7 +43,11 @@ function doPost(e) {
     }
 
     if (textoLower === "/start" || textoLower === "/ajuda") {
-      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal ou digite um gasto livre (ex: 'almoço 35 no vale refeição')!", telegramToken);
+      enviarMensagemTelegram(
+        chatId, 
+        "Envie uma foto de nota fiscal, registre um gasto (ex: 'almoço 35 no vr') ou avise quando algo acabar (ex: 'acabou o café').", 
+        telegramToken
+      );
       return HtmlService.createHtmlOutput();
     }
 
@@ -51,7 +55,7 @@ function doPost(e) {
     let nomeArquivo = "";
     let driveFile = null;
 
-    // 2. ROTA A: O usuário enviou uma FOTO
+    // 2. ROTA A: Envio de FOTO de cupom fiscal
     if (photoArray && photoArray.length > 0) {
       enviarMensagemTelegram(chatId, "⏳ Baixando a imagem do Telegram...", telegramToken);
 
@@ -88,36 +92,67 @@ function doPost(e) {
 
       dadosNota = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
 
-    // 3. ROTA B: O usuário digitou um TEXTO LIVRE (almoço, café, despesa rápida)
+    // 3. ROTA B: Mensagem de TEXTO LIVRE
     } else if (texto && texto.length > 3) {
-      enviarMensagemTelegram(chatId, "✍️ Anotando despesa informada...", telegramToken);
+      enviarMensagemTelegram(chatId, "✍️ Processando mensagem com Gemini...", telegramToken);
+      
+      const resultadoGemini = extrairDadosViaTexto(texto, geminiKey);
+
+      if (!resultadoGemini) {
+        enviarMensagemTelegram(chatId, "⚠️ Não consegui entender o texto. Ex: 'acabou o arroz' ou 'almoço 30 no vale'.", telegramToken);
+        return HtmlService.createHtmlOutput();
+      }
+
+      // SUB-ROTA: O usuário avisou que um produto esgotou
+      if (resultadoGemini.intencao === "item_esgotado" && resultadoGemini.item_esgotado) {
+        adicionarListaCompras(
+          resultadoGemini.item_esgotado,
+          resultadoGemini.categoria,
+          resultadoGemini.urgencia
+        );
+
+        const prioridade = resultadoGemini.urgencia === "Alta" ? "🚨 Prioridade: Alta" : "📌 Prioridade: Normal";
+
+        enviarMensagemTelegram(
+          chatId,
+          `📝 *Adicionado à lista de compras!*\n\n` +
+          `🛒 *Produto:* ${resultadoGemini.item_esgotado}\n` +
+          `🏷️ *Categoria:* ${resultadoGemini.categoria || "Geral"}\n` +
+          `${prioridade}\n` +
+          `📉 *Estoque:* Zerado na despensa`,
+          telegramToken
+        );
+        return HtmlService.createHtmlOutput();
+      }
+
+      // SUB-ROTA: Registro financeiro/almoço manual
+      dadosNota = resultadoGemini;
       nomeArquivo = "Lancamento_Manual_Telegram";
-      dadosNota = extrairDadosViaTexto(texto, geminiKey);
 
     } else {
-      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal ou digite o gasto (ex: 'almoço 34,90 no va').", telegramToken);
+      enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal ou digite um comando/gasto.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // Validação do retorno da IA
+    // Validação de segurança para fluxo de gastos
     if (!dadosNota || !dadosNota.itens || dadosNota.itens.length === 0) {
-      enviarMensagemTelegram(chatId, "⚠️ Não consegui estruturar os dados desse registro.", telegramToken);
+      enviarMensagemTelegram(chatId, "⚠️ Não foi possível identificar os dados deste registro.", telegramToken);
       return HtmlService.createHtmlOutput();
     }
 
-    // Higienização do identificador/chave
+    // Higienização de chave
     let identificador = "";
     if (dadosNota.identificador_nota) {
       identificador = String(dadosNota.identificador_nota).replace(/\D/g, "").trim();
       dadosNota.identificador_nota = identificador;
     }
 
-    // Se a função validarECorrigirData existir no seu projeto, sanitiza a data
+    // Sanitização de data
     if (typeof validarECorrigirData === "function") {
       dadosNota.data_compra = validarECorrigirData(dadosNota.data_compra, identificador);
     }
 
-    // Verificação de duplicados (apenas se for chave real de nota fiscal)
+    // Validação de duplicados (notas fiscais reais)
     if (identificador && !identificador.startsWith("MANUAL") && notaJaCadastrada(identificador)) {
       if (driveFile && folderProcessadasId) driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
       enviarMensagemTelegram(chatId, `⚠️ Esta nota (${identificador}) já tinha sido cadastrada!`, telegramToken);
@@ -128,17 +163,16 @@ function doPost(e) {
     gravarNaPlanilha(dadosNota, nomeArquivo);
     salvarNoFirebase(dadosNota, nomeArquivo);
 
-    // Mover arquivo de foto para processadas (se foi upload de foto)
     if (driveFile && folderProcessadasId) {
       driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
     }
 
-    // 5. Confirmação detalhada no Telegram
+    // 5. Confirmação do gasto registrado
     const total = dadosNota.itens.reduce((acc, it) => acc + (Number(it.preco_total) || 0), 0);
     const local = dadosNota.estabelecimento || "Supermercado / Refeição";
     const qtd = dadosNota.itens.length;
     const pagto = dadosNota.forma_pagamento ? `💳 Forma: ${dadosNota.forma_pagamento}\n` : "";
-    
+
     let dataFormatada = dadosNota.data_compra;
     if (dataFormatada && dataFormatada.includes("-")) {
       const p = dataFormatada.split("-");
@@ -168,20 +202,31 @@ function extrairDadosViaTexto(mensagemTexto, apiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
   const dataHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
 
-  const promptTexto = `
-Você é um assistente financeiro pessoal. Extraia os dados da despesa informada pelo usuário em linguagem natural.
+const promptTexto = `
+Você é um assistente pessoal de despensa e finanças.
+Analise a mensagem em linguagem natural e determine a intenção do usuário entre "registro_gasto" ou "item_esgotado".
 Data de referência de hoje: ${dataHoje}.
 
+--- CASO 1: intencao = "item_esgotado" ---
+Use quando o usuário avisar que algo acabou, pedir para repor ou adicionar à lista de compras (ex: "acabou o café", "o detergente terminou", "preciso comprar ovos", "coloca leite na lista").
 Regras:
-1. data_compra: Se o usuário mencionar "ontem", calcule a data respectiva relativa a ${dataHoje}. Se não mencionar data, retorne ${dataHoje}. Formato sempre YYYY-MM-DD.
-2. estabelecimento: Nome do local/restaurante ou "Almoço / Refeição" se não informado.
-3. tipo_gasto: Identifique se é "Almoço" (refeições/restaurantes) ou "Mercado" (mantimentos/compras).
+- item_esgotado: Nome padronizado do item (ex: "Café em Pó", "Detergente", "Ovos").
+- categoria: Categoria do item (ex: Mercearia, Limpeza, Laticínios/Frios, Hortifrúti, Carnes/Aves, Higiene, Bebidas).
+- urgencia: "Alta" se mencionar palavras como "urgente", "acabou tudo", "imediatamente", senão "Normal".
+- Deixe os campos de itens e valores vazios ou zerados.
+
+--- CASO 2: intencao = "registro_gasto" ---
+Use quando o usuário registrar um valor monetário/gasto pago (ex: "almoço 35 no va", "gastei 20 no pão com pix", "marmita 22 no débito").
+Regras:
+1. data_compra: Se mencionar "ontem", calcule relativo a ${dataHoje}. Se não mencionar data, retorne ${dataHoje}. Formato sempre YYYY-MM-DD.
+2. estabelecimento: Nome do restaurante/local ou "Almoço / Refeição" se não informado.
+3. tipo_gasto: "Almoço" (refeições fora) ou "Mercado" (mantimentos/compras).
 4. forma_pagamento: "Vale-Alimentação", "Vale-Refeição", "Crédito", "Débito", "Pix", ou "Outro". Se não mencionado e for almoço, assuma "Vale-Alimentação".
-5. identificador_nota: Gere um identificador no formato "MANUAL_YYYYMMDD_HHMMSS".
+5. identificador_nota: Gere no formato "MANUAL_YYYYMMDD_HHMMSS".
 6. itens:
-   - nome_original: O texto digitado pelo usuário.
+   - nome_original: O texto digitado.
    - nome_padronizado: Nome limpo da refeição ou produto (ex: "Almoço Comercial", "Self Service", "Marmita").
-   - categoria: Para almoços/restaurantes, use "Alimentação Fora".
+   - categoria: Para almoços use "Alimentação Fora".
    - quantidade: 1.
    - unidade: "un".
    - preco_unitario: O valor total gasto.
@@ -190,9 +235,25 @@ Regras:
 Mensagem do usuário: "${mensagemTexto}"
   `;
 
-  const jsonSchema = {
+ const jsonSchema = {
     type: "OBJECT",
     properties: {
+      intencao: { 
+        type: "STRING", 
+        description: "'registro_gasto' para valores pagos ou 'item_esgotado' para produtos que acabaram." 
+      },
+      item_esgotado: { 
+        type: "STRING", 
+        description: "Nome padronizado do produto esgotado (apenas se intencao for item_esgotado)." 
+      },
+      categoria: { 
+        type: "STRING", 
+        description: "Categoria do produto esgotado (apenas se intencao for item_esgotado)." 
+      },
+      urgencia: { 
+        type: "STRING", 
+        description: "'Normal' ou 'Alta' (apenas se intencao for item_esgotado)." 
+      },
       data_compra: { type: "STRING", description: "YYYY-MM-DD" },
       estabelecimento: { type: "STRING" },
       tipo_gasto: { type: "STRING", description: "'Almoço' ou 'Mercado'" },
@@ -215,7 +276,7 @@ Mensagem do usuário: "${mensagemTexto}"
         }
       }
     },
-    required: ["data_compra", "estabelecimento", "itens"]
+    required: ["intencao"]
   };
 
   const payload = {
@@ -690,5 +751,68 @@ function testarChamadaGemini() {
   } catch (e) {
     Logger.log("ERRO DETALHADO DO GEMINI:");
     Logger.log(e.toString());
+  }
+}
+
+/**
+ * Registra um item na aba Lista_Compras e no Firebase.
+ */
+function adicionarListaCompras(itemNome, categoria, urgencia) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let abaLista = ss.getSheetByName("Lista_Compras");
+
+  if (!abaLista) {
+    abaLista = ss.insertSheet("Lista_Compras");
+    abaLista.appendRow(["Item", "Categoria", "Urgencia", "Data_Inclusao", "Status"]);
+  }
+
+  const dataHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
+  
+  // 1. Grava na Planilha
+  abaLista.appendRow([itemNome, categoria || "Geral", urgencia || "Normal", dataHoje, "Pendente"]);
+
+  // 2. Grava no Firebase
+  const props = PropertiesService.getScriptProperties();
+  const dbUrl = (props.getProperty("FIREBASE_DB_URL") || "").trim().replace(/\/$/, "");
+  const dbSecret = (props.getProperty("FIREBASE_SECRET") || "").trim();
+
+  if (dbUrl && dbSecret) {
+    const chave = sanitizarChaveFirebase(itemNome.toLowerCase());
+    const url = `${dbUrl}/lista_compras/${chave}.json?auth=${dbSecret}`;
+    const payload = {
+      nome: itemNome,
+      categoria: categoria || "Geral",
+      urgencia: urgencia || "Normal",
+      adicionado_em: dataHoje,
+      status: "Pendente"
+    };
+    UrlFetchApp.fetch(url, {
+      method: "put",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+  }
+
+  // 3. Atualiza quantidade no estoque para 0 (item zerado)
+  zerarItemEstoque(itemNome);
+}
+
+/**
+ * Zera a quantidade do item na aba Estoque_Atual.
+ */
+function zerarItemEstoque(nomeItem) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const abaEstoque = ss.getSheetByName("Estoque_Atual");
+  if (!abaEstoque) return;
+
+  const dados = abaEstoque.getDataRange().getValues();
+  const busca = nomeItem.trim().toLowerCase();
+
+  for (let r = 1; r < dados.length; r++) {
+    if (String(dados[r][0]).trim().toLowerCase() === busca) {
+      abaEstoque.getRange(r + 1, 3).setValue(0); // Coluna 3: Qtd_Total_Comprada / Estoque
+      break;
+    }
   }
 }
