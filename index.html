@@ -55,7 +55,6 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
 .vb{flex:1;min-width:240px}
 .track{height:10px;background:#eef1f1;border-radius:6px;overflow:hidden}
 .track i{display:block;height:100%;background:var(--teal);border-radius:6px}
-.cyc{display:none;height:32px;border:1px solid var(--line);border-radius:8px;padding:0 8px;font:inherit;background:#fff;color:var(--ink)}
 .scroll{overflow-x:auto}
 .scroll th{position:sticky;top:0;background:#fff;z-index:1}
 @media(max-width:860px){.grid{grid-template-columns:1fr}.wrap{padding:0 16px 40px}}
@@ -69,6 +68,7 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
   </div>
   <div class="filters">
     <label>Mês<select id="f-mes"></select></label>
+    <label>Ciclo do vale<select id="f-ciclo"></select></label>
     <label>Categoria<select id="f-cat"></select></label>
     <label>Supermercado<select id="f-mk"></select></label>
     <label>Produto<input list="dl-prod" id="f-prod" placeholder="Todos"><datalist id="dl-prod"></datalist></label>
@@ -97,8 +97,7 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
     <div class="card">
       <div class="ch">
         <div><h2 id="ttl">Gasto ao longo do tempo</h2><p class="hint" id="trend"></p></div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="seg" id="view"><button data-v="gasto" class="on">Gasto</button><button data-v="vale">Vale</button></div><select id="f-ciclo" class="cyc"></select>
-        <div class="seg" id="gran">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="seg" id="view"><button data-v="gasto" class="on">Gasto</button><button data-v="vale">Vale</button></div><div class="seg" id="gran">
           <button data-g="day">Dia</button><button data-g="week">Semana</button><button data-g="month" class="on">Mês</button>
         </div></div>
       </div>
@@ -218,7 +217,7 @@ function sync(){$('f-mes').value=F.mes||'';$('f-cat').value=F.cat||'';$('f-mk').
   render()}));
 $('view').onclick=e=>{const v=e.target.dataset.v;if(!v)return;VIEW=v;[...$('view').children].forEach(b=>b.classList.toggle('on',b.dataset.v===v));render()};
 $('f-ciclo').onchange=e=>{VC=e.target.value;render()};
-$('limpar').onclick=()=>{F={};sync();render()};
+$('limpar').onclick=()=>{F={};VC='';sync();render()};
 $('gran').onclick=e=>{const g=e.target.dataset.g;if(!g)return;G=g;F.bk='';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g===g));render()};
 
 const sum=(a,f='v')=>a.reduce((s,l)=>s+l[f],0);
@@ -276,7 +275,6 @@ function valeCard(V){
   <div class="vb"><div class="track"><i style="width:${Math.min(100,pct)}%${over?';background:#e8a13a':''}"></i></div>
   <div class="dl" style="margin-top:8px">${brl(V.spent)} gastos de ${brl(VALE)} (${pct.toFixed(0)}%)${rest}</div></div>`;
   $('f-ciclo').value=V.key;
-  $('f-ciclo').style.display=VIEW==='vale'?'block':'none';
   $('gran').style.display=VIEW==='vale'?'none':'';
   $('ttl').textContent=VIEW==='vale'?'Vale-alimentação no ciclo':'Gasto ao longo do tempo';
 }

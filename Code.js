@@ -6,10 +6,7 @@ function doGet(e) {
 }
 
 /**
- * Webhook do Telegram (POST).
- */
-/**
- * Webhook do Telegram (POST) - Suporta fotos de notas fiscais e textos livres (almoços).
+ * Webhook do Telegram (POST) - Suporta fotos de notas fiscais e textos livres.
  */
 function doPost(e) {
   const props = PropertiesService.getScriptProperties();
@@ -90,12 +87,13 @@ function doPost(e) {
       const imageBase64 = Utilities.base64Encode(imageBytes);
       const mimeType = driveFile.getMimeType() || "image/jpeg";
 
+      // Extração real da imagem via Gemini
       dadosNota = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
 
     // 3. ROTA B: Mensagem de TEXTO LIVRE
     } else if (texto && texto.length > 3) {
       enviarMensagemTelegram(chatId, "✍️ Processando mensagem com Gemini...", telegramToken);
-      
+
       const resultadoGemini = extrairDadosViaTexto(texto, geminiKey);
 
       if (!resultadoGemini) {
@@ -103,7 +101,7 @@ function doPost(e) {
         return HtmlService.createHtmlOutput();
       }
 
-      // SUB-ROTA: O usuário avisou que um produto esgotou
+      // SUB-ROTA 1: O usuário avisou que um produto esgotou
       if (resultadoGemini.intencao === "item_esgotado" && resultadoGemini.item_esgotado) {
         adicionarListaCompras(
           resultadoGemini.item_esgotado,
@@ -125,9 +123,27 @@ function doPost(e) {
         return HtmlService.createHtmlOutput();
       }
 
-      // SUB-ROTA: Registro financeiro/almoço manual
+      // SUB-ROTA 2: Registro financeiro/almoço manual
       dadosNota = resultadoGemini;
       nomeArquivo = "Lancamento_Manual_Telegram";
+
+      // BLINDAGEM: Garante a criação de 'itens' caso o Gemini devolva valores na raiz do JSON
+      if (!dadosNota.itens || dadosNota.itens.length === 0) {
+        const valorDetectado = Number(dadosNota.preco_total || dadosNota.valor || dadosNota.preco || 0);
+        const nomeDetectado = dadosNota.nome_padronizado || dadosNota.estabelecimento || dadosNota.descricao || "Almoço / Lanche";
+
+        if (valorDetectado > 0) {
+          dadosNota.itens = [{
+            nome_original: texto,
+            nome_padronizado: nomeDetectado,
+            categoria: dadosNota.categoria || "Alimentação Fora",
+            quantidade: 1,
+            unidade: "un",
+            preco_unitario: valorDetectado,
+            preco_total: valorDetectado
+          }];
+        }
+      }
 
     } else {
       enviarMensagemTelegram(chatId, "Envie uma foto de nota fiscal ou digite um comando/gasto.", telegramToken);
@@ -152,7 +168,7 @@ function doPost(e) {
       dadosNota.data_compra = validarECorrigirData(dadosNota.data_compra, identificador);
     }
 
-    // Validação de duplicados (notas fiscais reais)
+    // Validação de duplicados (apenas notas fiscais reais)
     if (identificador && !identificador.startsWith("MANUAL") && notaJaCadastrada(identificador)) {
       if (driveFile && folderProcessadasId) driveFile.moveTo(DriveApp.getFolderById(folderProcessadasId));
       enviarMensagemTelegram(chatId, `⚠️ Esta nota (${identificador}) já tinha sido cadastrada!`, telegramToken);
@@ -196,174 +212,12 @@ function doPost(e) {
 }
 
 /**
- * Extrai dados estruturados a partir de mensagens de texto livres no Telegram.
- */
-function extrairDadosViaTexto(mensagemTexto, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
-  const dataHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
-
-const promptTexto = `
-Você é um assistente pessoal de despensa e finanças.
-Analise a mensagem em linguagem natural e determine a intenção do usuário entre "registro_gasto" ou "item_esgotado".
-Data de referência de hoje: ${dataHoje}.
-
---- CASO 1: intencao = "item_esgotado" ---
-Use quando o usuário avisar que algo acabou, pedir para repor ou adicionar à lista de compras (ex: "acabou o café", "o detergente terminou", "preciso comprar ovos", "coloca leite na lista").
-Regras:
-- item_esgotado: Nome padronizado do item (ex: "Café em Pó", "Detergente", "Ovos").
-- categoria: Categoria do item (ex: Mercearia, Limpeza, Laticínios/Frios, Hortifrúti, Carnes/Aves, Higiene, Bebidas).
-- urgencia: "Alta" se mencionar palavras como "urgente", "acabou tudo", "imediatamente", senão "Normal".
-- Deixe os campos de itens e valores vazios ou zerados.
-
---- CASO 2: intencao = "registro_gasto" ---
-Use quando o usuário registrar um valor monetário/gasto pago (ex: "almoço 35 no va", "gastei 20 no pão com pix", "marmita 22 no débito").
-Regras:
-1. data_compra: Se mencionar "ontem", calcule relativo a ${dataHoje}. Se não mencionar data, retorne ${dataHoje}. Formato sempre YYYY-MM-DD.
-2. estabelecimento: Nome do restaurante/local ou "Almoço / Refeição" se não informado.
-3. tipo_gasto: "Almoço" (refeições fora) ou "Mercado" (mantimentos/compras).
-4. forma_pagamento: "Vale-Alimentação", "Vale-Refeição", "Crédito", "Débito", "Pix", ou "Outro". Se não mencionado e for almoço, assuma "Vale-Alimentação".
-5. identificador_nota: Gere no formato "MANUAL_YYYYMMDD_HHMMSS".
-6. itens:
-   - nome_original: O texto digitado.
-   - nome_padronizado: Nome limpo da refeição ou produto (ex: "Almoço Comercial", "Self Service", "Marmita").
-   - categoria: Para almoços use "Alimentação Fora".
-   - quantidade: 1.
-   - unidade: "un".
-   - preco_unitario: O valor total gasto.
-   - preco_total: O valor total gasto.
-
-Mensagem do usuário: "${mensagemTexto}"
-  `;
-
- const jsonSchema = {
-    type: "OBJECT",
-    properties: {
-      intencao: { 
-        type: "STRING", 
-        description: "'registro_gasto' para valores pagos ou 'item_esgotado' para produtos que acabaram." 
-      },
-      item_esgotado: { 
-        type: "STRING", 
-        description: "Nome padronizado do produto esgotado (apenas se intencao for item_esgotado)." 
-      },
-      categoria: { 
-        type: "STRING", 
-        description: "Categoria do produto esgotado (apenas se intencao for item_esgotado)." 
-      },
-      urgencia: { 
-        type: "STRING", 
-        description: "'Normal' ou 'Alta' (apenas se intencao for item_esgotado)." 
-      },
-      data_compra: { type: "STRING", description: "YYYY-MM-DD" },
-      estabelecimento: { type: "STRING" },
-      tipo_gasto: { type: "STRING", description: "'Almoço' ou 'Mercado'" },
-      forma_pagamento: { type: "STRING" },
-      identificador_nota: { type: "STRING" },
-      itens: {
-        type: "ARRAY",
-        items: {
-          type: "OBJECT",
-          properties: {
-            nome_original: { type: "STRING" },
-            nome_padronizado: { type: "STRING" },
-            categoria: { type: "STRING" },
-            quantidade: { type: "NUMBER" },
-            unidade: { type: "STRING" },
-            preco_unitario: { type: "NUMBER" },
-            preco_total: { type: "NUMBER" }
-          },
-          required: ["nome_original", "nome_padronizado", "categoria", "quantidade", "preco_total"]
-        }
-      }
-    },
-    required: ["intencao"]
-  };
-
-  const payload = {
-    contents: [{ parts: [{ text: promptTexto }] }],
-    generationConfig: {
-      responseMimeType: "application/json",
-      responseSchema: jsonSchema,
-      temperature: 0.1
-    }
-  };
-
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  for (let tentativa = 1; tentativa <= 3; tentativa++) {
-    const response = UrlFetchApp.fetch(url, options);
-    const statusCode = response.getResponseCode();
-
-    if (statusCode === 200) {
-      const jsonResponse = JSON.parse(response.getContentText());
-      return JSON.parse(jsonResponse.candidates[0].content.parts[0].text);
-    }
-
-    if ((statusCode === 500 || statusCode === 503 || statusCode === 429) && tentativa < 3) {
-      Utilities.sleep(2000 * tentativa);
-      continue;
-    }
-
-    throw new Error(`Erro na API do Gemini Texto (${statusCode}): ${response.getContentText()}`);
-  }
-}
-
-/**
- * Consulta simples do stock consolidado.
- */
-function consultarEstoqueTelegram() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const abaEstoque = ss.getSheetByName("Estoque_Atual");
-
-  if (!abaEstoque || abaEstoque.getLastRow() <= 1) {
-    return "Nenhum item encontrado no estoque.";
-  }
-
-  const dados = abaEstoque.getDataRange().getValues();
-  let resposta = "📦 *Itens no Estoque:*\n\n";
-
-  for (let i = 1; i < dados.length; i++) {
-    const nome = dados[i][0];
-    const qtd = dados[i][2];
-    if (nome) {
-      resposta += `• ${nome} (${qtd})\n`;
-    }
-  }
-
-  return resposta;
-}
-
-/**
- * Verificação de duplicados na aba Historico_Compras.
- */
-function notaJaCadastrada(identificador) {
-  if (!identificador) return false;
-
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const abaHistorico = ss.getSheetByName("Historico_Compras");
-  if (!abaHistorico) return false;
-
-  const dados = abaHistorico.getDataRange().getValues();
-  for (let i = 1; i < dados.length; i++) {
-    if (dados[i][9] && String(dados[i][9]).trim() === identificador) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Chamada à API Gemini com Structured Outputs.
+ * Chamada à API Gemini com Structured Outputs para FOTOS de Notas Fiscais.
  */
 function extrairDadosViaGemini(base64Image, mimeType, apiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
 
-const promptTexto = `
+  const promptTexto = `
 Você é um especialista em OCR e normalização de cupons fiscais brasileiros.
 Analise a nota fiscal e extraia os dados reais.
 
@@ -456,7 +310,7 @@ Campos obrigatórios:
       return JSON.parse(jsonResponse.candidates[0].content.parts[0].text);
     }
 
-    if ((statusCode === 503 || statusCode === 429) && tentativa < 3) {
+    if ((statusCode === 500 || statusCode === 503 || statusCode === 429) && tentativa < 3) {
       Utilities.sleep(3000 * tentativa);
       continue;
     }
@@ -466,13 +320,195 @@ Campos obrigatórios:
 }
 
 /**
- * Registo na aba Historico_Compras.
+ * Chamada à API Gemini para TEXTOS LIVRES (Almoços, Gastos Rápidos ou Itens Esgotados).
  */
+function extrairDadosViaTexto(mensagemTexto, apiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
+  const dataHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+
+  const promptTexto = `
+Você é um assistente financeiro pessoal.
+Analise a mensagem e identifique a intenção: "registro_gasto" ou "item_esgotado".
+Data base de hoje: ${dataHoje}.
+
+Se a mensagem indicar despesa, alimentação, lanche ou valor pago (ex: "Alimentação tapioca 9 reais", "almoço 35 no va"):
+- intencao: "registro_gasto"
+- data_compra: Se houver data no texto (ex: 09/11/2026), converta para YYYY-MM-DD. Se não houver, use ${dataHoje}.
+- estabelecimento: Nome do local/restaurante ou "Alimentação / Lanche".
+- forma_pagamento: "Vale-Alimentação", "Vale-Refeição", "Débito", "Crédito", "Pix" ou "Outro".
+- OBRIGATÓRIO preencher o array "itens" com exatamente 1 item contendo:
+  * nome_original: texto original
+  * nome_padronizado: nome limpo (ex: "Tapioca", "Almoço", "Lanche")
+  * categoria: "Alimentação Fora"
+  * quantidade: 1
+  * unidade: "un"
+  * preco_unitario: valor numérico (ex: 9.00)
+  * preco_total: valor numérico (ex: 9.00)
+
+Se a mensagem indicar que algo acabou (ex: "acabou o café"):
+- intencao: "item_esgotado"
+- item_esgotado: nome do produto
+- categoria: categoria do item
+- urgencia: "Normal" ou "Alta"
+- itens: []
+
+Mensagem do usuário: "${mensagemTexto}"
+  `;
+
+  const jsonSchema = {
+    type: "OBJECT",
+    properties: {
+      intencao: { type: "STRING" },
+      item_esgotado: { type: "STRING" },
+      categoria: { type: "STRING" },
+      urgencia: { type: "STRING" },
+      data_compra: { type: "STRING" },
+      estabelecimento: { type: "STRING" },
+      forma_pagamento: { type: "STRING" },
+      itens: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            nome_original: { type: "STRING" },
+            nome_padronizado: { type: "STRING" },
+            categoria: { type: "STRING" },
+            quantidade: { type: "NUMBER" },
+            unidade: { type: "STRING" },
+            preco_unitario: { type: "NUMBER" },
+            preco_total: { type: "NUMBER" }
+          },
+          required: ["nome_padronizado", "quantidade", "preco_total"]
+        }
+      }
+    },
+    required: ["intencao"]
+  };
+
+  const payload = {
+    contents: [{ parts: [{ text: promptTexto }] }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: jsonSchema,
+      temperature: 0.1
+    }
+  };
+
+  for (let tentativa = 1; tentativa <= 3; tentativa++) {
+    const response = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    const statusCode = response.getResponseCode();
+
+    if (statusCode === 200) {
+      const json = JSON.parse(response.getContentText());
+      return JSON.parse(json.candidates[0].content.parts[0].text);
+    }
+
+    if ((statusCode === 500 || statusCode === 503 || statusCode === 429) && tentativa < 3) {
+      Utilities.sleep(2000 * tentativa);
+      continue;
+    }
+
+    throw new Error(`Erro na API do Gemini Texto (${statusCode}): ${response.getContentText()}`);
+  }
+}
+
 /**
- * Registo na folha de cálculo (aba Historico_Compras).
+ * Consulta simples do estoque consolidado.
+ */
+function consultarEstoqueTelegram() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const abaEstoque = ss.getSheetByName("Estoque_Atual");
+
+  if (!abaEstoque || abaEstoque.getLastRow() <= 1) {
+    return "Nenhum item encontrado no estoque.";
+  }
+
+  const dados = abaEstoque.getDataRange().getValues();
+  let resposta = "📦 *Itens no Estoque:*\n\n";
+
+  for (let i = 1; i < dados.length; i++) {
+    const nome = dados[i][0];
+    const qtd = dados[i][2];
+    if (nome) {
+      resposta += `• ${nome} (${qtd})\n`;
+    }
+  }
+
+  return resposta;
+}
+
+/**
+ * Verificação de duplicados na aba Historico_Compras.
+ */
+function notaJaCadastrada(identificador) {
+  if (!identificador) return false;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const abaHistorico = ss.getSheetByName("Historico_Compras");
+  if (!abaHistorico) return false;
+
+  const dados = abaHistorico.getDataRange().getValues();
+  for (let i = 1; i < dados.length; i++) {
+    if (dados[i][9] && String(dados[i][9]).trim() === identificador) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Garante que a data esteja no formato YYYY-MM-DD e corrige inversões.
+ */
+function validarECorrigirData(dataStr, chaveAcesso) {
+  const anoAtual = new Date().getFullYear();
+
+  if (dataStr) {
+    const partes = String(dataStr).trim().split(/[-/]/);
+    
+    if (partes.length === 3) {
+      let [p1, p2, p3] = partes.map(Number);
+
+      if (p1 < 2000) {
+        if (p3 >= 20 && p3 <= 40) p3 = 2000 + p3;
+        if (p2 <= 12 && p1 <= 31) {
+          const ano = p3 >= 2000 ? p3 : anoAtual;
+          return `${ano}-${String(p2).padStart(2, '0')}-${String(p1).padStart(2, '0')}`;
+        }
+      } else {
+        if (chaveAcesso && chaveAcesso.length >= 6) {
+          const anoChave = 2000 + parseInt(chaveAcesso.substring(2, 4), 10);
+          const mesChave = parseInt(chaveAcesso.substring(4, 6), 10);
+          if (p1 !== anoChave && anoChave >= 2020) {
+            p1 = anoChave;
+            if (p2 !== mesChave && mesChave <= 12) p2 = mesChave;
+            return `${p1}-${String(p2).padStart(2, '0')}-${String(p3).padStart(2, '0')}`;
+          }
+        }
+        return `${p1}-${String(p2).padStart(2, '0')}-${String(p3).padStart(2, '0')}`;
+      }
+    }
+  }
+
+  if (chaveAcesso && chaveAcesso.length >= 6) {
+    const ano = 2000 + parseInt(chaveAcesso.substring(2, 4), 10);
+    const mes = chaveAcesso.substring(4, 6);
+    const diaHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd");
+    return `${ano}-${mes}-${diaHoje}`;
+  }
+
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+/**
+ * Registro na folha de cálculo (aba Historico_Compras).
  */
 function gravarNaPlanilha(dadosNota, nomeArquivo) {
-  // 1. Inicializa "ss" logo na primeira linha
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let abaHistorico = ss.getSheetByName("Historico_Compras");
 
@@ -517,7 +553,6 @@ function gravarNaPlanilha(dadosNota, nomeArquivo) {
     linhasHistorico[0].length
   ).setValues(linhasHistorico);
 
-  // 2. Só atualiza o stock se NÃO for almoço avulso
   if (dadosNota.tipo_gasto !== "Almoço") {
     atualizarOuInserirEstoque(ss, dadosNota);
   }
@@ -671,7 +706,7 @@ function salvarNoFirebase(dadosNota, nomeArquivo) {
           qtdAtual = Number(itemExistente.quantidade_total) || 0;
         }
       } catch (e) {
-        // Primeiro registo do item
+        // Primeiro registro do item
       }
 
       const payloadEstoque = {
@@ -720,40 +755,6 @@ function enviarMensagemTelegram(chatId, texto, token) {
   });
 }
 
-
-/**
- * Roda o teste com a imagem que acabou de ser salva no Drive e imprime o erro real no console.
- */
-function testarChamadaGemini() {
-  const props = PropertiesService.getScriptProperties();
-  const geminiKey = (props.getProperty("GEMINI_API_KEY") || "").replace(/["'\s]/g, "");
-  const folderEntradaId = (props.getProperty("FOLDER_ENTRADA_ID") || "").trim();
-
-  const pasta = DriveApp.getFolderById(folderEntradaId);
-  const arquivos = pasta.getFiles();
-
-  if (!arquivos.hasNext()) {
-    Logger.log("Nenhum arquivo na pasta de entrada.");
-    return;
-  }
-
-  const arquivo = arquivos.next();
-  Logger.log("Testando com o arquivo: " + arquivo.getName());
-
-  const imageBytes = arquivo.getBlob().getBytes();
-  const imageBase64 = Utilities.base64Encode(imageBytes);
-  const mimeType = arquivo.getMimeType() || "image/jpeg";
-
-  try {
-    const dados = extrairDadosViaGemini(imageBase64, mimeType, geminiKey);
-    Logger.log("SUCESSO! Dados retornados:");
-    Logger.log(JSON.stringify(dados, null, 2));
-  } catch (e) {
-    Logger.log("ERRO DETALHADO DO GEMINI:");
-    Logger.log(e.toString());
-  }
-}
-
 /**
  * Registra um item na aba Lista_Compras e no Firebase.
  */
@@ -767,11 +768,8 @@ function adicionarListaCompras(itemNome, categoria, urgencia) {
   }
 
   const dataHoje = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
-  
-  // 1. Grava na Planilha
   abaLista.appendRow([itemNome, categoria || "Geral", urgencia || "Normal", dataHoje, "Pendente"]);
 
-  // 2. Grava no Firebase
   const props = PropertiesService.getScriptProperties();
   const dbUrl = (props.getProperty("FIREBASE_DB_URL") || "").trim().replace(/\/$/, "");
   const dbSecret = (props.getProperty("FIREBASE_SECRET") || "").trim();
@@ -794,7 +792,6 @@ function adicionarListaCompras(itemNome, categoria, urgencia) {
     });
   }
 
-  // 3. Atualiza quantidade no estoque para 0 (item zerado)
   zerarItemEstoque(itemNome);
 }
 
@@ -811,7 +808,7 @@ function zerarItemEstoque(nomeItem) {
 
   for (let r = 1; r < dados.length; r++) {
     if (String(dados[r][0]).trim().toLowerCase() === busca) {
-      abaEstoque.getRange(r + 1, 3).setValue(0); // Coluna 3: Qtd_Total_Comprada / Estoque
+      abaEstoque.getRange(r + 1, 3).setValue(0);
       break;
     }
   }
