@@ -204,19 +204,19 @@ function opts(){
   const u=k=>[...new Set(L.map(l=>l[k]))].sort();
   $('f-cat').innerHTML='<option value="">Todas</option>'+u('cat').map(x=>`<option>${esc(x)}</option>`).join('');
   const cs=new Set([cycKey(cycStart(new Date()))]);L.forEach(l=>{if(l.d)cs.add(cycKey(cycStart(l.d)))});
-  $('f-ciclo').innerHTML=[...cs].sort().reverse().map(k=>{const s=new Date(+k.slice(0,4),+k.slice(5)-1,VALE_DIA),e=new Date(s.getFullYear(),s.getMonth()+1,VALE_DIA-1);return`<option value="${k}">${p2(s.getDate())}/${p2(s.getMonth()+1)} – ${p2(e.getDate())}/${p2(e.getMonth()+1)}</option>`}).join('');
+  $('f-ciclo').innerHTML='<option value="">Todos os ciclos</option>'+[...cs].sort().reverse().map(k=>{const s=new Date(+k.slice(0,4),+k.slice(5)-1,VALE_DIA),e=new Date(s.getFullYear(),s.getMonth()+1,VALE_DIA-1);return`<option value="${k}">${p2(s.getDate())}/${p2(s.getMonth()+1)} – ${p2(e.getDate())}/${p2(e.getMonth()+1)}</option>`}).join('');
   const ms=[...new Set(L.filter(l=>l.d).map(l=>key(l.d,'month')))].sort().reverse();
   $('f-mes').innerHTML='<option value="">Todos os meses</option>'+ms.map(m=>{const[y,n]=m.split('-');return`<option value="${m}">${new Date(y,n-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}</option>`}).join('');
   $('f-mk').innerHTML='<option value="">Todos</option>'+u('mk').map(x=>`<option>${esc(x)}</option>`).join('');
   $('dl-prod').innerHTML=u('p').map(x=>`<option value="${esc(x)}">`).join('');
 }
-function sync(){$('f-mes').value=F.mes||'';$('f-cat').value=F.cat||'';$('f-mk').value=F.mk||'';$('f-prod').value=F.prod||''}
+function sync(){$('f-mes').value=F.mes||'';$('f-ciclo').value=VC;$('f-cat').value=F.cat||'';$('f-mk').value=F.mk||'';$('f-prod').value=F.prod||''}
 [['f-mes','mes'],['f-cat','cat'],['f-mk','mk'],['f-prod','prod']].forEach(([id,k])=>$(id).addEventListener('change',e=>{
-  F[k]=e.target.value;F.nota='';if(k==='mes')F.bk='';
+  F[k]=e.target.value;F.nota='';if(k==='mes'){F.bk='';if(F.mes)VC=''}
   if(k==='mes'&&F.mes&&G==='month'){G='day';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g==='day'))}
   render()}));
 $('view').onclick=e=>{const v=e.target.dataset.v;if(!v)return;VIEW=v;[...$('view').children].forEach(b=>b.classList.toggle('on',b.dataset.v===v));render()};
-$('f-ciclo').onchange=e=>{VC=e.target.value;render()};
+$('f-ciclo').onchange=e=>{VC=e.target.value;F.bk='';F.nota='';if(VC){F.mes='';if(G==='month'){G='day';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g==='day'))}}sync();render()};
 $('limpar').onclick=()=>{F={};VC='';sync();render()};
 $('gran').onclick=e=>{const g=e.target.dataset.g;if(!g)return;G=g;F.bk='';[...$('gran').children].forEach(b=>b.classList.toggle('on',b.dataset.g===g));render()};
 
@@ -271,10 +271,10 @@ function calcVale(){
 function valeCard(V){
   const pct=V.spent/VALE*100,over=V.saldo<0;
   const rest=V.rest==null?' · ciclo encerrado':' · '+V.rest+(V.rest>1?' dias restantes':' dia restante')+(V.saldo>0?' · até '+brl(V.saldo/V.rest)+'/dia':'');
-  $('vale').innerHTML=`<div><div class="kh"><span>Saldo do vale · ${V.lab}</span></div><div class="kv" style="margin-top:8px${over?';color:#b9791a':''}">${brl(V.saldo)}</div></div>
+  $('vale').innerHTML=`<div><div class="kh"><span>Saldo do vale · ${V.lab}${VC?'':' (ciclo atual)'}</span></div><div class="kv" style="margin-top:8px${over?';color:#b9791a':''}">${brl(V.saldo)}</div></div>
   <div class="vb"><div class="track"><i style="width:${Math.min(100,pct)}%${over?';background:#e8a13a':''}"></i></div>
   <div class="dl" style="margin-top:8px">${brl(V.spent)} gastos de ${brl(VALE)} (${pct.toFixed(0)}%)${rest}</div></div>`;
-  $('f-ciclo').value=V.key;
+  $('f-ciclo').value=VC;
   $('gran').style.display=VIEW==='vale'?'none':'';
   $('ttl').textContent=VIEW==='vale'?'Vale-alimentação no ciclo':'Gasto ao longo do tempo';
 }
@@ -310,6 +310,7 @@ function render(){
   const ok=l=>(!F.cat||l.cat===F.cat)&&(!F.mk||l.mk===F.mk)&&(!F.prod||l.p===F.prod);
   let a=null,b=null,pa=null;
   if(F.mes){const[y,m]=F.mes.split('-').map(Number);a=new Date(y,m-1,1);b=new Date(y,m,0,23,59,59);pa=new Date(y,m-2,1)}
+  else if(VC){const c=new Date(+VC.slice(0,4),+VC.slice(5)-1,VALE_DIA);a=c;b=new Date(c.getFullYear(),c.getMonth()+1,VALE_DIA-1,23,59,59);pa=new Date(c.getFullYear(),c.getMonth()-1,VALE_DIA)}
   else if(dts.length){a=new Date(Math.min(...dts));b=new Date(Math.max(...dts));b.setHours(23,59,59)}
   const W=$('warn');
   if(!dts.length){W.style.display='block';W.textContent='Não encontrei a data das compras. Campos aceitos: '+DATE_KEYS.join(', ')+'. Informe o nome do seu campo para eu ajustar.'}else W.style.display='none';
