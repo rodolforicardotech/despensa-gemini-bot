@@ -84,18 +84,6 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
   <section>
     <div class="card">
       <div class="ch">
-        <div><h2>Lista de compras</h2><p class="hint" id="lc-hint"></p></div>
-        <div class="seg" id="lc-mode"><button data-s="p" class="on">Pendentes</button><button data-s="t">Todos</button></div>
-      </div>
-      <div class="scroll" style="max-height:320px;overflow-y:auto"><table>
-        <thead><tr><th>Item</th><th>Categoria</th><th>Urgência</th><th>Adicionado em</th><th>Status</th></tr></thead>
-        <tbody id="lc"></tbody></table></div>
-    </div>
-  </section>
-
-  <section>
-    <div class="card">
-      <div class="ch">
         <div><h2 id="ttl">Gasto ao longo do tempo</h2><p class="hint" id="trend"></p></div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="seg" id="view"><button data-v="gasto" class="on">Gasto</button><button data-v="vale">Vale</button></div><div class="seg" id="gran">
           <button data-g="day">Dia</button><button data-g="week">Semana</button><button data-g="month" class="on">Mês</button>
@@ -157,7 +145,7 @@ const brl=v=>v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pick=(o,ks)=>{for(const k of ks)if(o&&o[k]!=null&&o[k]!=='')return o[k]};
 const fd=d=>d.toLocaleDateString('pt-BR');
-let L=[],E=[],charts={},F={},G='month',CM='cnt',VC='',VIEW='gasto',LC=[],LM='p';
+let L=[],E=[],charts={},F={},G='month',CM='cnt',VC='',VIEW='gasto';
 
 function parseD(v){
   if(v==null)return null;
@@ -187,17 +175,15 @@ function nomeItem(i){
 async function carregar(){
   if(!FB||FB.includes('SEU_PROJETO')){$('warn').style.display='block';$('warn').textContent='Configure FIREBASE_URL no arquivo config.js.';return}
   try{
-    const [a,b,z]=await Promise.all([fetch(FB+'/compras.json'),fetch(FB+'/estoque.json'),fetch(FB+'/lista_compras.json').catch(()=>null)]);
+    const [a,b]=await Promise.all([fetch(FB+'/compras.json'),fetch(FB+'/estoque.json')]);
     const c=(await a.json())||{};E=Object.values((await b.json())||{});
-    let rl=null;try{rl=z&&z.ok?await z.json():null}catch(e){}
-    LC=rl&&typeof rl==='object'&&!rl.error?Object.values(rl).filter(x=>x&&typeof x==='object'):[];
     L=[];
     Object.entries(c).forEach(([id,n])=>{
       const d=parseD(pick(n,DATE_KEYS)),mk=n.estabelecimento||'Supermercado';
       const its=Array.isArray(n.itens)?n.itens:Object.values(n.itens||{});
       its.forEach(i=>L.push({id,k:String(n.identificador_nota||''),d,mk,cat:i.categoria||'Geral',p:nomeItem(i),q:Number(pick(i,['quantidade','qtd','qtde'])??1)||0,v:Number(i.preco_total)||0}));
     });
-    opts();render();lista();
+    opts();render();
   }catch(e){$('warn').style.display='block';$('warn').textContent='Erro ao conectar ao Firebase: '+e.message}
 }
 function opts(){
@@ -288,21 +274,6 @@ function drawVale(V){
     scales:{x:{grid:{display:false},ticks:{maxTicksLimit:10}},y:{suggestedMin:0,suggestedMax:VALE*1.05,grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}}}}});
   $('trend').textContent='Saldo restante ao fim de cada dia · soma todas as compras do ciclo, sem aplicar os filtros';
 }
-
-// Lista de compras (/lista_compras): estado atual, não depende dos filtros do painel
-function lista(){
-  const pend=x=>!x.status||String(x.status).toLowerCase()==='pendente';
-  const alta=x=>String(x.urgencia||'').toLowerCase()==='alta';
-  const a=(LM==='p'?LC.filter(pend):LC.slice()).sort((x,y)=>(alta(y)-alta(x))||((parseD(x.adicionado_em)||0)-(parseD(y.adicionado_em)||0)));
-  const np=LC.filter(pend).length,na=LC.filter(x=>pend(x)&&alta(x)).length;
-  $('lc-hint').textContent=np+(np===1?' item pendente':' itens pendentes')+(na?' · '+na+' com urgência alta':'');
-  $('lc').innerHTML=a.map(x=>{
-    const d=parseD(x.adicionado_em),dias=d?Math.floor((Date.now()-d)/864e5):0;
-    const quando=d?fd(d)+' '+p2(d.getHours())+':'+p2(d.getMinutes())+' <span style="color:var(--mut)">· '+(dias<1?'hoje':'há '+dias+(dias===1?' dia':' dias'))+'</span>':'–';
-    const urg=alta(x)?'<span class="tag" style="background:#fdf0d9;color:#8a5a12">Alta</span>':'<span class="tag">'+esc(x.urgencia||'Normal')+'</span>';
-    return`<tr style="cursor:default"><td><b style="font-weight:500">${esc(x.nome||'–')}</b></td><td><span class="tag">${esc(x.categoria||'Geral')}</span></td><td>${urg}</td><td>${quando}</td><td>${esc(x.status||'Pendente')}</td></tr>`}).join('')||'<tr><td colspan="5" style="color:var(--mut)">Nenhum item na lista.</td></tr>';
-}
-$('lc-mode').onclick=e=>{const m=e.target.dataset.s;if(!m)return;LM=m;[...$('lc-mode').children].forEach(b=>b.classList.toggle('on',b.dataset.s===m));lista()};
 
 function render(){
   const V=calcVale();valeCard(V);
