@@ -136,9 +136,24 @@ tbody tr{cursor:pointer}tbody tr:hover{background:#f7fafa}
 <script src="config.js"></script>
 <script>
 const FB=(typeof CONFIG!=='undefined'&&CONFIG.FIREBASE_URL)||"";
-// Nomes de campo aceitos para a data da compra (ajuste se o seu for diferente)
-// Vale-alimentação: valor e dia do crédito (o ciclo vai do dia 20 até o dia 19 do mês seguinte)
-const VALE=1750,VALE_DIA=20;
+// Vale-alimentação: dia do crédito (o ciclo vai do dia 20 até o dia 19 do mês seguinte)
+const VALE_DIA=20;
+let CONFIG_VALE={
+  valor_padrao:1900,
+  valor_anterior:1750,
+  mes_virada:'2026-12',
+  excecoes_mensais:{'2026-11':2600}
+};
+function obterTetoValeDoMes(anoMes){
+  if(CONFIG_VALE&&CONFIG_VALE.excecoes_mensais&&CONFIG_VALE.excecoes_mensais[anoMes]!==undefined){
+    return Number(CONFIG_VALE.excecoes_mensais[anoMes]);
+  }
+  const mesVirada=(CONFIG_VALE&&CONFIG_VALE.mes_virada)||'2026-12';
+  if(anoMes<mesVirada){
+    return Number(CONFIG_VALE&&CONFIG_VALE.valor_anterior!=null?CONFIG_VALE.valor_anterior:1750);
+  }
+  return Number(CONFIG_VALE&&CONFIG_VALE.valor_padrao!=null?CONFIG_VALE.valor_padrao:1900);
+}
 const DATE_KEYS=['data','data_compra','data_emissao','dataEmissao','data_hora','timestamp','criado_em','created_at'];
 const $=id=>document.getElementById(id);
 const brl=v=>v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
@@ -175,8 +190,14 @@ function nomeItem(i){
 async function carregar(){
   if(!FB||FB.includes('SEU_PROJETO')){$('warn').style.display='block';$('warn').textContent='Configure FIREBASE_URL no arquivo config.js.';return}
   try{
-    const [a,b]=await Promise.all([fetch(FB+'/compras.json'),fetch(FB+'/estoque.json')]);
+    const [a,b,cv]=await Promise.all([
+      fetch(FB+'/compras.json'),
+      fetch(FB+'/estoque.json'),
+      fetch(FB+'/config_vale.json')
+    ]);
     const c=(await a.json())||{};E=Object.values((await b.json())||{});
+    const cfg=await cv.json();
+    if(cfg)CONFIG_VALE=cfg;
     L=[];
     Object.entries(c).forEach(([id,n])=>{
       const d=parseD(pick(n,DATE_KEYS)),mk=n.estabelecimento||'Supermercado';
@@ -245,33 +266,39 @@ function calcVale(){
   const now=new Date(),c0=cycStart(now);
   const start=VC?new Date(+VC.slice(0,4),+VC.slice(5)-1,VALE_DIA):c0;
   const {end,n,a}=cycDaily(start);
-  const pv=cycDaily(new Date(start.getFullYear(),start.getMonth()-1,VALE_DIA));
+  const pStart=new Date(start.getFullYear(),start.getMonth()-1,VALE_DIA);
+  const pv=cycDaily(pStart);
   let t=0;const cum=a.map(v=>+(t+=v).toFixed(2));
   let pt=0;const pcum=pv.a.map(v=>+(pt+=v).toFixed(2));
   const atual=+start===+c0,idx=Math.round((dOnly(now)-start)/864e5);
   if(atual)for(let i=idx+1;i<n;i++)cum[i]=null;
   const last=new Date(+end-864e5);
-  return{key:cycKey(start),lab:p2(start.getDate())+'/'+p2(start.getMonth()+1)+' – '+p2(last.getDate())+'/'+p2(last.getMonth()+1),
-    n,start,cum,pcum,spent:t,saldo:VALE-t,rest:atual?n-idx:null};
+  const cKey=cycKey(start);
+  const teto=obterTetoValeDoMes(cKey);
+  const pTeto=obterTetoValeDoMes(cycKey(pStart));
+  return{key:cKey,lab:p2(start.getDate())+'/'+p2(start.getMonth()+1)+' – '+p2(last.getDate())+'/'+p2(last.getMonth()+1),
+    n,start,cum,pcum,spent:t,teto,pTeto,saldo:teto-t,rest:atual?n-idx:null};
 }
 function valeCard(V){
-  const pct=V.spent/VALE*100,over=V.saldo<0;
+  const pct=V.spent/V.teto*100,over=V.saldo<0;
   const rest=V.rest==null?' · ciclo encerrado':' · '+V.rest+(V.rest>1?' dias restantes':' dia restante')+(V.saldo>0?' · até '+brl(V.saldo/V.rest)+'/dia':'');
   $('vale').innerHTML=`<div><div class="kh"><span>Saldo do vale · ${V.lab}${VC?'':' (ciclo atual)'}</span></div><div class="kv" style="margin-top:8px${over?';color:#b9791a':''}">${brl(V.saldo)}</div></div>
   <div class="vb"><div class="track"><i style="width:${Math.min(100,pct)}%${over?';background:#e8a13a':''}"></i></div>
-  <div class="dl" style="margin-top:8px">${brl(V.spent)} gastos de ${brl(VALE)} (${pct.toFixed(0)}%)${rest}</div></div>`;
+  <div class="dl" style="margin-top:8px">${brl(V.spent)} gastos de ${brl(V.teto)} (${pct.toFixed(0)}%)${rest}</div></div>`;
   $('f-ciclo').value=VC;
   $('gran').style.display=VIEW==='vale'?'none':'';
   $('ttl').textContent=VIEW==='vale'?'Vale-alimentação no ciclo':'Gasto ao longo do tempo';
 }
 function drawVale(V){
   const lb=[];for(let i=0;i<V.n;i++){const d=new Date(V.start.getFullYear(),V.start.getMonth(),V.start.getDate()+i);lb.push(p2(d.getDate())+'/'+p2(d.getMonth()+1))}
-  const rest=a=>a.map(v=>v==null?null:+(VALE-v).toFixed(2));
-  const ds=[{label:'Saldo do vale',data:rest(V.cum),borderColor:'#0f5c6e',backgroundColor:'rgba(15,92,110,.08)',fill:true,tension:.2,borderWidth:2,pointRadius:0,pointHoverRadius:5}];
-  if(V.pcum.some(v=>v>0))ds.push({label:'Ciclo anterior',data:rest(V.pcum.slice(0,V.n)),borderColor:'#a9b4b8',borderDash:[5,5],borderWidth:1.5,pointRadius:0,tension:.2});
+  const rest=(a,teto)=>a.map(v=>v==null?null:+(teto-v).toFixed(2));
+  const ds=[{label:'Saldo do vale',data:rest(V.cum,V.teto),borderColor:'#0f5c6e',backgroundColor:'rgba(15,92,110,.08)',fill:true,tension:.2,borderWidth:2,pointRadius:0,pointHoverRadius:5}];
+  const hasPrev=V.pcum.some(v=>v>0);
+  if(hasPrev)ds.push({label:'Ciclo anterior',data:rest(V.pcum.slice(0,V.n),V.pTeto),borderColor:'#a9b4b8',borderDash:[5,5],borderWidth:1.5,pointRadius:0,tension:.2});
+  const maxY=(hasPrev?Math.max(V.teto,V.pTeto):V.teto)*1.05;
   draw('cTempo',{type:'line',data:{labels:lb,datasets:ds},options:{maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
     plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>c.raw==null?null:c.dataset.label+': '+brl(c.raw)}}},
-    scales:{x:{grid:{display:false},ticks:{maxTicksLimit:10}},y:{suggestedMin:0,suggestedMax:VALE*1.05,grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}}}}});
+    scales:{x:{grid:{display:false},ticks:{maxTicksLimit:10}},y:{suggestedMin:0,suggestedMax:maxY,grid:{color:'#eef1f1'},ticks:{callback:v=>'R$ '+v}}}}});
   $('trend').textContent='Saldo restante ao fim de cada dia · soma todas as compras do ciclo, sem aplicar os filtros';
 }
 
